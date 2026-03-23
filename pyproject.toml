@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipeio"
+version = "0.1.0"
+description = "Pipeline registry, notebook lifecycle, and flow management for research repositories"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Arash Shahidi" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["pipeline", "workflow", "snakemake", "notebook", "registry", "research"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = ["pyyaml>=6.0", "pydantic>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/arashshahidi1997/pipeio"
+Repository = "https://github.com/arashshahidi1997/pipeio"
+Issues = "https://github.com/arashshahidi1997/pipeio/issues"
+
+[project.scripts]
+pipeio = "pipeio.cli:main"
+
+[project.optional-dependencies]
+bids = ["snakebids>=0.15"]
+notebook = ["jupytext>=1.16", "nbconvert>=7"]
+docs = ["mkdocs-material>=9"]
+dev = ["pytest", "build", "twine"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pipeio = ["templates/**/*.tmpl"]

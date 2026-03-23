@@ -1,0 +1,22 @@
+# Bibliography-owned RAG config
+#
+# This file is owned by `biblio`. It can be used directly in standalone
+# projects, or included from a larger project-level RAG config.
+
+embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+chunk_size_chars: 1000
+chunk_overlap_chars: 200
+
+default_store: local
+
+stores:
+  local:
+    persist_directory: .cache/rag/chroma_db
+    read_only: false
+    description: "Per-clone writable Chroma cache for bibliography indexing"
+
+sources:
+  - id: "biblio_docling"
+    corpus: "bib"
+    glob: "bib/derivatives/docling/**/*.md"
+    exclude: ["**/_*"]

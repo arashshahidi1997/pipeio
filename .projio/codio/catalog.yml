@@ -1,0 +1,3 @@
+# Codio library catalog — project-agnostic identity metadata
+# See: codio vocab --field kind  for allowed values
+libraries: {}

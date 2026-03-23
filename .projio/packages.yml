@@ -1,0 +1,13 @@
+packages:
+  notio:
+    enabled: true
+    path: .projio/notio
+  biblio:
+    enabled: true
+    path: .projio/biblio
+  codio:
+    enabled: true
+    path: .projio/codio
+  indexio:
+    enabled: true
+    path: .projio/indexio

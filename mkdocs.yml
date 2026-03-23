@@ -1,0 +1,46 @@
+site_name: pipeio
+docs_dir: docs
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - tutorials/index.md
+      - Quickstart: tutorials/quickstart.md
+  - How-To Guides:
+      - how-to/index.md
+      - Initialize a project: how-to/init.md
+      - Manage flows: how-to/flows.md
+      - Scan and validate: how-to/registry.md
+      - Resolve paths: how-to/paths.md
+  - Explanation:
+      - explanation/index.md
+      - Ecosystem Links: explanation/ecosystem-links.md
+      - Three-level hierarchy: explanation/hierarchy.md
+      - Path resolution design: explanation/path-resolution.md
+      - Registry model: explanation/registry-model.md
+  - Reference:
+      - reference/index.md
+      - CLI commands: reference/cli.md
+      - Configuration: reference/configuration.md
+      - Workspace layout: reference/workspace.md
+  - Specs:
+      - specs/pipeio/index.md
+      - specs/pipeio/overview.md
+      - specs/pipeio/registry.md
+      - specs/pipeio/flow-config.md
+      - specs/pipeio/path-resolution.md
+      - specs/pipeio/notebook.md
+      - specs/pipeio/cli.md
+      - specs/pipeio/mcp-tools.md

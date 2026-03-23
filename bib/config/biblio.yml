@@ -1,0 +1,82 @@
+# biblio configuration (repo-local)
+#
+# Paths are relative to the repository root (where you run `biblio ...`).
+#
+# Default layout:
+#   bib/articles/<citekey>/<citekey>.pdf
+#   bib/derivatives/docling/<citekey>/<citekey>.md|.json
+
+citekeys: "bib/config/citekeys.md"
+
+pdf_root: "bib/articles"
+pdf_pattern: "{citekey}/{citekey}.pdf"
+
+out_root: "bib/derivatives/docling"
+
+docling:
+  # Can be a string or list[str]. Examples:
+  #   cmd: ["conda", "run", "-n", "docling", "docling"]
+  #   cmd: "docling"
+  cmd: "docling"
+  to: ["md", "json"]
+  image_export_mode: "referenced"
+
+# Optional: OpenAlex enrichment (requires `pip install "biblio-tools[openalex]"`)
+openalex:
+  base_url: "https://api.openalex.org"
+  # email: "you@lab.org"   # recommended: used as `mailto=` per OpenAlex etiquette
+  # api_key: ""            # optional
+  cache_dir: "bib/derivatives/openalex/cache"
+  timeout_s: 30
+  max_retries: 3
+  per_page: 25
+  # select can be a list[str] or comma-separated string. Defaults are reasonable.
+  # select: ["id","doi","display_name","publication_year","cited_by_count","authorships","topics","referenced_works","ids"]
+
+# Optional: srcbib merge (e.g. Zotero exports -> one main bib file)
+bibtex:
+  fetch:
+    # Copy/symlink PDFs referenced in BibTeX `file` fields (run on the machine
+    # that has those file paths available, e.g. the Zotero export machine).
+    src_dir: "bib/srcbib"
+    src_glob: "*.bib"
+    mode: "copy"     # copy | symlink
+    hash: "md5"      # md5 | none
+    manifest: "bib/logs/pdf_manifest.json"
+    missing_log: "bib/logs/missing_pdfs.txt"
+    # Optional destination overrides; defaults to pdf_root/pdf_pattern above:
+    # dest_root: "bib/articles"
+    # dest_pattern: "{citekey}/{citekey}.pdf"
+
+  merge:
+    # Where Zotero/BetterBibTeX exports are stored
+    src_dir: "bib/srcbib"
+    src_glob: "*.bib"
+
+    # Output bib file (used for citations elsewhere; Docling does not require this)
+    out_bib: "bib/main.bib"
+
+    # What to do with BibTeX `file = {...}` fields:
+    # - keep: keep as-is (often contains machine-specific absolute paths)
+    # - drop: remove the field (default; most portable)
+    # - rewrite: set to file_field_template per entry
+    file_field_mode: "drop"
+    file_field_template: "bib/articles/{citekey}/{citekey}.pdf"
+
+    # Written when duplicate citekeys are found (last-wins)
+    duplicates_log: "bib/logs/duplicate_bib_ids.txt"
+
+openalex:
+  src_dir: "bib/srcbib"
+  src_glob: "*.bib"
+  cache_root: "bib/derivatives/openalex/cache"
+  out_jsonl: "bib/derivatives/openalex/resolved.jsonl"
+  out_csv: "bib/derivatives/openalex/resolved.csv"
+
+# Optional: GROBID scholarly structure extraction
+# grobid:
+#   url: "http://127.0.0.1:8070"
+#   # installation_path: "/path/to/grobid"   # optional local checkout; start cmd derived automatically
+#   timeout_seconds: 30
+#   consolidate_header: true
+#   consolidate_citations: false

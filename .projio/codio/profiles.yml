@@ -1,0 +1,3 @@
+# Codio project profiles — local policy for each library
+# See: codio vocab --field priority  for allowed values
+profiles: {}

@@ -1,0 +1,65 @@
+# projio workspace config
+project_name: pipeio
+project_kind: generic
+description: ""
+
+indexio:
+  config: .projio/indexio/config.yaml
+  persist_dir: .projio/indexio/index
+
+biblio:
+  enabled: true
+  config: bib/config/biblio.yml
+
+notio:
+  enabled: true
+  notes_dir: notes/
+  template_dir: .projio/notio/templates
+
+codio:
+  enabled: true
+  catalog_path: .projio/codio/catalog.yml
+  profiles_path: .projio/codio/profiles.yml
+  notes_dir: docs/reference/codelib/libraries/
+
+site:
+  framework: mkdocs
+  output_dir: site
+  base_port: 8000
+  host: "127.0.0.1"
+  mkdocs:
+    config_file: mkdocs.yml
+    site_dir: site
+  sphinx:
+    source_dir: docs
+    build_dir: docs/_build/html
+  vite:
+    app_dir: .
+    build_dir: site
+  chatbot:
+    enabled: false
+    backend_url: null
+    host: "127.0.0.1"
+    port: 9100
+    title: "Docs Assistant"
+    storage_key: "pipeio_chat_v1"
+
+runtime:
+  python_bin: null
+
+helpers:
+  sibling:
+    github:
+      sibling: github
+      credential: github
+      project_template: "{project_name}"
+    gitlab:
+      sibling: gitlab
+      credential: gitlab
+      project_template: "{project_name}"
+    ria:
+      sibling: origin
+      alias_strategy: basename
+  docs:
+    mkdocs:
+      enabled: false
