@@ -1,6 +1,22 @@
-# >>> projio >>>
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Docs
+site/
+
+# projio
 .projio.mkdocs.yml
 .projio/servers.json
 .projio/site/
-site/
-# <<< projio <<<
