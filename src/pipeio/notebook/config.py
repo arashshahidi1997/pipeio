@@ -19,10 +19,16 @@ class NotebookEntry(BaseModel):
 
 
 class PublishConfig(BaseModel):
-    """Publication settings for notebooks."""
+    """Publication settings for notebooks.
 
+    When used with ``pipeio docs collect`` (preferred), *docs_dir* is
+    computed from the registry as ``docs/pipelines/<pipe>/<flow>/notebooks/``.
+    The *docs_dir* field is kept for standalone ``pipeio nb publish`` usage.
+    """
+
+    format: str = "html"
     docs_dir: str = ""
-    prefix: str = "nb-"
+    prefix: str = ""
 
 
 class NotebookConfig(BaseModel):

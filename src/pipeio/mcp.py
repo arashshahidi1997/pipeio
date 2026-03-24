@@ -10,13 +10,27 @@ from pathlib import Path
 from typing import Any
 
 
+def _find_registry(root: Path) -> Path | None:
+    """Locate the pipeline registry, checking .projio/pipeio/ first."""
+    for candidate in (
+        root / ".projio" / "pipeio" / "registry.yml",
+        root / ".pipeio" / "registry.yml",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+_NO_REGISTRY = {"error": "No pipeline registry found", "hint": "Run pipeio init"}
+
+
 def mcp_flow_list(root: Path, pipe: str | None = None) -> dict[str, Any]:
     """List flows, optionally filtered by pipe."""
     from pipeio.registry import PipelineRegistry
 
-    registry_path = root / ".pipeio" / "registry.yml"
-    if not registry_path.exists():
-        return {"error": "No pipeline registry found", "hint": "Run pipeio init"}
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
     registry = PipelineRegistry.from_yaml(registry_path)
     flows = registry.list_flows(pipe=pipe)
     return {"flows": [f.model_dump() for f in flows]}
@@ -27,9 +41,9 @@ def mcp_flow_status(root: Path, pipe: str, flow: str) -> dict[str, Any]:
     from pipeio.config import FlowConfig
     from pipeio.registry import PipelineRegistry
 
-    registry_path = root / ".pipeio" / "registry.yml"
-    if not registry_path.exists():
-        return {"error": "No pipeline registry found", "hint": "Run pipeio init"}
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
@@ -79,9 +93,9 @@ def mcp_nb_status(root: Path) -> dict[str, Any]:
     """Show notebook sync and publication status."""
     from pipeio.registry import PipelineRegistry
 
-    registry_path = root / ".pipeio" / "registry.yml"
-    if not registry_path.exists():
-        return {"error": "No pipeline registry found", "hint": "Run pipeio init"}
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
 
     registry = PipelineRegistry.from_yaml(registry_path)
     flow_statuses: list[dict[str, Any]] = []
@@ -134,13 +148,85 @@ def mcp_nb_status(root: Path) -> dict[str, Any]:
     return {"flows": flow_statuses}
 
 
+def mcp_mod_list(root: Path, pipe: str, flow: str | None = None) -> dict[str, Any]:
+    """List mods for a specific flow."""
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    return {
+        "pipe": entry.pipe,
+        "flow": entry.name,
+        "mods": {name: mod.model_dump() for name, mod in entry.mods.items()},
+    }
+
+
+def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
+    """Resolve modkeys (pipe-X_flow-Y_mod-Z) into metadata.
+
+    Modkey format: ``pipe-<pipe>_flow-<flow>_mod-<mod>``
+    """
+    import re
+
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    pattern = re.compile(
+        r"^(?:@)?pipe-(?P<pipe>[^_]+)_flow-(?P<flow>[^_]+)_mod-(?P<mod>.+)$"
+    )
+
+    results: list[dict[str, Any]] = []
+    for raw_key in modkeys:
+        key = raw_key.strip()
+        m = pattern.match(key)
+        if not m:
+            results.append({"input": raw_key, "error": f"Invalid modkey format: {key!r}"})
+            continue
+
+        pipe, flow, mod = m.group("pipe"), m.group("flow"), m.group("mod")
+        try:
+            entry = registry.get(pipe, flow)
+        except (KeyError, ValueError) as exc:
+            results.append({"input": raw_key, "error": str(exc)})
+            continue
+
+        mod_entry = entry.mods.get(mod)
+        result: dict[str, Any] = {
+            "input": raw_key,
+            "modkey": key,
+            "pipe": pipe,
+            "flow": flow,
+            "mod": mod,
+            "found": mod_entry is not None,
+        }
+        if mod_entry:
+            result["meta"] = mod_entry.model_dump()
+            if mod_entry.doc_path:
+                result["doc_exists"] = (root / mod_entry.doc_path).exists()
+        results.append(result)
+
+    return {"count": len(results), "results": results}
+
+
 def mcp_registry_validate(root: Path) -> dict[str, Any]:
     """Validate pipeline registry consistency."""
     from pipeio.registry import PipelineRegistry
 
-    registry_path = root / ".pipeio" / "registry.yml"
-    if not registry_path.exists():
-        return {"error": "No pipeline registry found", "hint": "Run pipeio init"}
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
 
     registry = PipelineRegistry.from_yaml(registry_path)
     result = registry.validate(root=root)

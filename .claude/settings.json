@@ -1,0 +1,17 @@
+{
+  "allowedTools": [
+    "Read",
+    "Glob",
+    "Grep",
+    "Edit(/storage2/arash/projects/projio/packages/pipeio/**)",
+    "Write(/storage2/arash/projects/projio/packages/pipeio/**)",
+    "Bash(ls:*)",
+    "Bash(find:*)",
+    "Bash(git:*)",
+    "Bash(python:*)",
+    "Bash(pip:*)",
+    "Bash(pytest:*)",
+    "Bash(make:*)",
+    "mcp__projio__*"
+  ]
+}

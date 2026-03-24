@@ -23,7 +23,7 @@ def test_init_idempotent(tmp_path, capsys):
     main(["init", "--root", str(tmp_path)])
     ret = main(["init", "--root", str(tmp_path)])
     assert ret == 0
-    assert "already exists" in capsys.readouterr().out
+    assert "already initialized" in capsys.readouterr().out
 
 
 def test_flow_list_no_registry(tmp_path, capsys):

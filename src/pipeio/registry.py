@@ -219,6 +219,7 @@ def _discover_flows(
             code_path=str(pipe_dir),
             config_path=config_path,
             doc_path=doc_path,
+            mods=_discover_mods(pipe_dir),
         )
 
     # Check subdirectories for additional flows
@@ -238,6 +239,7 @@ def _discover_flows(
                 code_path=str(child),
                 config_path=config_path,
                 doc_path=doc_path,
+                mods=_discover_mods(child),
             )
 
     # Check for .smk files at pipe root
@@ -257,6 +259,56 @@ def _discover_flows(
         )
 
     return flows
+
+
+_RULE_RE = re.compile(r"^\s*rule\s+(\w+)\s*:", re.MULTILINE)
+_MOD_PREFIX_RE = re.compile(r"^([a-z][a-z0-9]*?)_")
+
+
+def _discover_mods(flow_dir: Path) -> dict[str, ModEntry]:
+    """Parse Snakefiles for ``rule`` blocks and group them into mods by prefix.
+
+    Mod grouping convention:
+    - Rules named ``<prefix>_<rest>`` are grouped under mod ``<prefix>``.
+    - Rules with no underscore become a mod named after the rule itself.
+    - .smk files in the flow directory are also scanned.
+    """
+    rule_names: list[str] = []
+
+    # Scan Snakefile and *.smk files
+    candidates = list(flow_dir.glob("*.smk"))
+    snakefile = flow_dir / "Snakefile"
+    if snakefile.exists():
+        candidates.insert(0, snakefile)
+
+    for sf in candidates:
+        try:
+            text = sf.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        rule_names.extend(_RULE_RE.findall(text))
+
+    if not rule_names:
+        return {}
+
+    # Group rules by mod prefix
+    mod_rules: dict[str, list[str]] = {}
+    for rule in rule_names:
+        m = _MOD_PREFIX_RE.match(rule)
+        mod_name = m.group(1) if m else rule
+        mod_rules.setdefault(mod_name, []).append(rule)
+
+    # Check for per-mod docs in flow_dir/docs/
+    mods: dict[str, ModEntry] = {}
+    for mod_name, rules in sorted(mod_rules.items()):
+        doc_path = flow_dir / "docs" / f"mod-{mod_name}.md"
+        mods[mod_name] = ModEntry(
+            name=mod_name,
+            rules=sorted(rules),
+            doc_path=str(doc_path) if doc_path.exists() else None,
+        )
+
+    return mods
 
 
 def _find_doc_path(docs_dir: Path | None, pipe: str, flow: str) -> str | None:
