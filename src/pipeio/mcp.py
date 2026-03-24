@@ -220,6 +220,108 @@ def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
     return {"count": len(results), "results": results}
 
 
+def mcp_registry_scan(root: Path) -> dict[str, Any]:
+    """Scan the filesystem for pipelines and rebuild the registry."""
+    from pipeio.registry import PipelineRegistry
+
+    # Determine pipelines directory (same logic as CLI)
+    if (root / "code" / "pipelines").exists():
+        pipelines_dir = root / "code" / "pipelines"
+    elif (root / "pipelines").exists():
+        pipelines_dir = root / "pipelines"
+    else:
+        return {"error": "No pipelines directory found (checked code/pipelines/ and pipelines/)"}
+
+    docs_dir = None
+    if (root / "docs" / "explanation" / "pipelines").exists():
+        docs_dir = root / "docs" / "explanation" / "pipelines"
+
+    registry = PipelineRegistry.scan(pipelines_dir, docs_dir=docs_dir)
+
+    # Write to registry file
+    for candidate in (
+        root / ".projio" / "pipeio" / "registry.yml",
+        root / ".pipeio" / "registry.yml",
+    ):
+        if candidate.parent.exists():
+            registry.to_yaml(candidate)
+            break
+    else:
+        # Fallback: create .pipeio/ if neither exists
+        out_dir = root / ".pipeio"
+        out_dir.mkdir(exist_ok=True)
+        registry.to_yaml(out_dir / "registry.yml")
+
+    flows = registry.list_flows()
+    total_mods = sum(len(f.mods) for f in flows)
+    return {
+        "scanned": str(pipelines_dir),
+        "pipes": len(registry.list_pipes()),
+        "flows": len(flows),
+        "mods": total_mods,
+        "flow_details": [
+            {
+                "pipe": f.pipe,
+                "flow": f.name,
+                "has_config": f.config_path is not None,
+                "has_docs": f.doc_path is not None,
+                "mod_count": len(f.mods),
+            }
+            for f in flows
+        ],
+    }
+
+
+def mcp_docs_collect(root: Path) -> dict[str, Any]:
+    """Collect flow-local docs and notebook outputs into docs/pipelines/."""
+    from pipeio.docs import docs_collect
+
+    try:
+        collected = docs_collect(root)
+    except ImportError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    return {
+        "collected": len(collected),
+        "files": collected,
+    }
+
+
+def mcp_docs_nav(root: Path) -> dict[str, Any]:
+    """Generate MkDocs nav YAML fragment for docs/pipelines/."""
+    from pipeio.docs import docs_nav
+
+    fragment = docs_nav(root)
+    return {"nav_fragment": fragment}
+
+
+def mcp_contracts_validate(root: Path) -> dict[str, Any]:
+    """Validate I/O contracts for all flows in the registry."""
+    from pipeio.contracts import validate_flow_contracts
+
+    results = validate_flow_contracts(root)
+    if not results:
+        return _NO_REGISTRY
+
+    flow_results = []
+    for fv in results:
+        flow_results.append({
+            "flow": fv.flow_id,
+            "valid": fv.ok,
+            "passed": fv.passed,
+            "warnings": fv.warnings,
+            "errors": fv.errors,
+        })
+
+    all_valid = all(fv.ok for fv in results)
+    return {
+        "valid": all_valid,
+        "flows": flow_results,
+    }
+
+
 def mcp_registry_validate(root: Path) -> dict[str, Any]:
     """Validate pipeline registry consistency."""
     from pipeio.registry import PipelineRegistry

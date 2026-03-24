@@ -82,7 +82,7 @@ pipeio contracts validate         — check pipeline I/O contracts
 
 ### MCP Tool Surface
 
-Tools exposed via projio's MCP server: `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_nb_status`, `pipeio_registry_validate`.
+Tools exposed via projio's MCP server: `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_nb_status`, `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_registry_scan`, `pipeio_registry_validate`, `pipeio_docs_collect`, `pipeio_docs_nav`, `pipeio_contracts_validate`.
 
 ## Source Layout
 
