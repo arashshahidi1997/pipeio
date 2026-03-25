@@ -322,6 +322,287 @@ def mcp_contracts_validate(root: Path) -> dict[str, Any]:
     }
 
 
+def mcp_nb_create(
+    root: Path,
+    pipe: str,
+    flow: str,
+    name: str,
+    kind: str = "investigate",
+    description: str = "",
+) -> dict[str, Any]:
+    """Scaffold a new notebook for a flow.
+
+    Creates a percent-format ``.py`` script with bootstrap cells
+    (config load, registry groups) and registers it in ``notebook.yml``.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name.
+        name: Notebook name (e.g. ``investigate_noise``).
+        kind: Prefix convention (investigate, explore, demo).
+        description: One-line purpose, injected as header comment.
+    """
+    from pipeio.config import FlowConfig
+    from pipeio.notebook.config import NotebookConfig, NotebookEntry
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    # Resolve flow directory
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    nb_dir = flow_dir / "notebooks"
+    nb_dir.mkdir(parents=True, exist_ok=True)
+
+    nb_path = nb_dir / f"{name}.py"
+    if nb_path.exists():
+        return {"error": f"Notebook already exists: {nb_path.relative_to(root)}"}
+
+    # Load flow config for registry groups
+    groups: list[str] = []
+    config_path_str = entry.config_path
+    if config_path_str:
+        cfg_path = Path(config_path_str)
+        if not cfg_path.is_absolute():
+            cfg_path = root / cfg_path
+        if cfg_path.exists():
+            try:
+                cfg = FlowConfig.from_yaml(cfg_path)
+                groups = cfg.groups()
+            except Exception:
+                pass
+
+    # Generate percent-format .py
+    lines: list[str] = []
+    lines.append("# ---")
+    lines.append(f"# jupyter:")
+    lines.append(f"#   jupytext:")
+    lines.append(f"#     text_representation:")
+    lines.append(f"#       format_name: percent")
+    lines.append("# ---")
+    lines.append("")
+    lines.append(f'# %% [markdown]')
+    desc_text = description or f"{kind.title()} notebook for {pipe}/{flow}"
+    lines.append(f"# # {name.replace('_', ' ').title()}")
+    lines.append(f"#")
+    lines.append(f"# {desc_text}")
+    lines.append("")
+    lines.append("# %% [markdown]")
+    lines.append("# ## Setup")
+    lines.append("")
+    lines.append("# %%")
+    lines.append("from pathlib import Path")
+    lines.append("")
+    if config_path_str:
+        rel_cfg = Path(config_path_str)
+        if not rel_cfg.is_absolute():
+            # Compute relative path from notebook dir to config
+            try:
+                rel = Path(config_path_str).resolve() if Path(
+                    config_path_str
+                ).is_absolute() else (root / config_path_str).resolve()
+                rel_cfg = rel.relative_to(nb_dir.resolve())
+            except ValueError:
+                rel_cfg = Path(config_path_str)
+        lines.append(f'config_path = Path("{rel_cfg}")')
+    lines.append("")
+
+    if groups:
+        lines.append(f"# Registry groups: {', '.join(groups)}")
+        lines.append("")
+
+    lines.append("# %% [markdown]")
+    lines.append("# ## Analysis")
+    lines.append("")
+    lines.append("# %%")
+    lines.append("")
+
+    nb_path.write_text("\n".join(lines), encoding="utf-8")
+
+    # Register in notebook.yml
+    nb_cfg_path = nb_dir / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+        except Exception:
+            nb_cfg = NotebookConfig()
+    else:
+        nb_cfg = NotebookConfig()
+
+    rel_nb = f"notebooks/{name}.py"
+    existing_paths = {e.path for e in nb_cfg.entries}
+    if rel_nb not in existing_paths:
+        nb_cfg.entries.append(NotebookEntry(
+            path=rel_nb,
+            pair_ipynb=True,
+            pair_myst=True,
+            publish_myst=True,
+        ))
+        import yaml
+        nb_cfg_path.write_text(
+            yaml.dump(nb_cfg.model_dump(), sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+
+    try:
+        result_path = str(nb_path.relative_to(root))
+    except ValueError:
+        result_path = str(nb_path)
+
+    return {
+        "created": result_path,
+        "pipe": pipe,
+        "flow": flow,
+        "name": name,
+        "kind": kind,
+        "registry_groups": groups,
+        "notebook_yml_updated": rel_nb not in existing_paths,
+    }
+
+
+def mcp_nb_sync(
+    root: Path,
+    pipe: str,
+    flow: str,
+    name: str,
+    formats: list[str] | None = None,
+) -> dict[str, Any]:
+    """Sync a specific notebook (jupytext pair + convert).
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name.
+        name: Notebook basename (without extension).
+        formats: Which formats to produce (default: ['ipynb', 'myst']).
+    """
+    from pipeio.registry import PipelineRegistry
+
+    if formats is None:
+        formats = ["ipynb", "myst"]
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    py_path = flow_dir / "notebooks" / f"{name}.py"
+    if not py_path.exists():
+        return {"error": f"Notebook not found: notebooks/{name}.py"}
+
+    try:
+        from pipeio.notebook.lifecycle import _require_jupytext, _jupytext
+        _require_jupytext()
+    except ImportError as exc:
+        return {"error": str(exc)}
+
+    generated: list[str] = []
+
+    if "ipynb" in formats:
+        ipynb_path = py_path.with_suffix(".ipynb")
+        _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path))
+        try:
+            generated.append(str(ipynb_path.relative_to(root)))
+        except ValueError:
+            generated.append(str(ipynb_path))
+
+    if "myst" in formats:
+        myst_path = py_path.with_suffix(".md")
+        _jupytext(py_path, "--to", "myst", "--output", str(myst_path))
+        try:
+            generated.append(str(myst_path.relative_to(root)))
+        except ValueError:
+            generated.append(str(myst_path))
+
+    return {
+        "synced": True,
+        "source": str(py_path.relative_to(root)),
+        "generated": generated,
+        "formats": formats,
+    }
+
+
+def mcp_nb_publish(
+    root: Path,
+    pipe: str,
+    flow: str,
+    name: str,
+) -> dict[str, Any]:
+    """Publish a notebook's myst markdown to the docs tree.
+
+    Copies the ``.md`` (myst) file from the flow's notebooks directory
+    to ``docs/pipelines/<pipe>/<flow>/notebooks/nb-<name>.md``.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name.
+        name: Notebook basename (without extension).
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    myst_src = flow_dir / "notebooks" / f"{name}.md"
+    if not myst_src.exists():
+        return {
+            "error": f"MyST file not found: notebooks/{name}.md",
+            "hint": "Run pipeio_nb_sync first to generate the .md file.",
+        }
+
+    import shutil
+
+    dest_dir = root / "docs" / "pipelines" / pipe / flow / "notebooks"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"nb-{name}.md"
+    shutil.copy2(myst_src, dest)
+
+    try:
+        result_path = str(dest.relative_to(root))
+    except ValueError:
+        result_path = str(dest)
+
+    return {
+        "published": result_path,
+        "source": str(myst_src.relative_to(root)),
+        "pipe": pipe,
+        "flow": flow,
+        "name": name,
+    }
+
+
 def mcp_registry_validate(root: Path) -> dict[str, Any]:
     """Validate pipeline registry consistency."""
     from pipeio.registry import PipelineRegistry

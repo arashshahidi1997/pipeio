@@ -14,3 +14,6 @@ packages:
   claude:
     enabled: true
     path: .projio/claude
+  pipeio:
+    enabled: true
+    path: .projio/pipeio
