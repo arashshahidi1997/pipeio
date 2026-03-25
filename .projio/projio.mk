@@ -3,6 +3,7 @@
 
 PYTHON  ?= python
 DATALAD ?= /storage/share/python/environments/Anaconda3/envs/labpy/bin/datalad
+MKDOCS  ?= $(PYTHON) -m mkdocs
 PROJIO  ?= /storage/share/python/environments/Anaconda3/envs/rag/bin/python -m projio
 MSG     ?= Update
 

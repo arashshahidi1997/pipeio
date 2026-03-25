@@ -227,7 +227,25 @@ def nb_publish(root: Path) -> list[str]:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _require_jupytext() -> None:
+def _require_jupytext(python_bin: str | None = None) -> None:
+    """Check that jupytext is available.
+
+    When *python_bin* is given, probe via subprocess (the tool may live in a
+    different Python environment).  Otherwise fall back to an in-process import.
+    """
+    if python_bin:
+        import subprocess as _sp
+        try:
+            _sp.run(
+                [python_bin, "-m", "jupytext", "--version"],
+                capture_output=True, check=True, timeout=15,
+            )
+            return
+        except (FileNotFoundError, _sp.CalledProcessError, _sp.TimeoutExpired):
+            raise ImportError(
+                f"jupytext not found via {python_bin}. "
+                "Install with: pip install pipeio[notebook]"
+            )
     try:
         import jupytext  # noqa: F401
     except ImportError:
@@ -247,8 +265,17 @@ def _require_nbconvert() -> None:
         )
 
 
-def _jupytext(source: Path, *args: str) -> None:
-    subprocess.run(["jupytext", str(source), *args], check=True)
+def _jupytext(source: Path, *args: str, python_bin: str | None = None) -> None:
+    """Run jupytext on *source*.
+
+    When *python_bin* is given, invoke as ``python_bin -m jupytext`` so the
+    tool can live in a different environment from the MCP server.
+    """
+    if python_bin:
+        cmd = [python_bin, "-m", "jupytext", str(source), *args]
+    else:
+        cmd = ["jupytext", str(source), *args]
+    subprocess.run(cmd, check=True)
 
 
 def _nbconvert_exec(nb_path: Path) -> None:

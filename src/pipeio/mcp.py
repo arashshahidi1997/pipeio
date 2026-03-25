@@ -477,6 +477,7 @@ def mcp_nb_sync(
     flow: str,
     name: str,
     formats: list[str] | None = None,
+    python_bin: str | None = None,
 ) -> dict[str, Any]:
     """Sync a specific notebook (jupytext pair + convert).
 
@@ -486,6 +487,7 @@ def mcp_nb_sync(
         flow: Flow name.
         name: Notebook basename (without extension).
         formats: Which formats to produce (default: ['ipynb', 'myst']).
+        python_bin: Python binary where jupytext is installed (optional).
     """
     from pipeio.registry import PipelineRegistry
 
@@ -512,7 +514,7 @@ def mcp_nb_sync(
 
     try:
         from pipeio.notebook.lifecycle import _require_jupytext, _jupytext
-        _require_jupytext()
+        _require_jupytext(python_bin=python_bin)
     except ImportError as exc:
         return {"error": str(exc)}
 
@@ -520,7 +522,7 @@ def mcp_nb_sync(
 
     if "ipynb" in formats:
         ipynb_path = py_path.with_suffix(".ipynb")
-        _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path))
+        _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path), python_bin=python_bin)
         try:
             generated.append(str(ipynb_path.relative_to(root)))
         except ValueError:
@@ -528,7 +530,7 @@ def mcp_nb_sync(
 
     if "myst" in formats:
         myst_path = py_path.with_suffix(".md")
-        _jupytext(py_path, "--to", "myst", "--output", str(myst_path))
+        _jupytext(py_path, "--to", "myst", "--output", str(myst_path), python_bin=python_bin)
         try:
             generated.append(str(myst_path.relative_to(root)))
         except ValueError:
