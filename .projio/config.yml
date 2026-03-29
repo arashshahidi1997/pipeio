@@ -1,6 +1,7 @@
 # projio workspace config
 project_name: pipeio
 project_kind: generic
+push_sibling: github
 description: ""
 
 indexio:

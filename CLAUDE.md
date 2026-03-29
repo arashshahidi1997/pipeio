@@ -82,7 +82,21 @@ pipeio contracts validate         — check pipeline I/O contracts
 
 ### MCP Tool Surface
 
-Tools exposed via projio's MCP server: `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_sync`, `pipeio_nb_publish`, `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_registry_scan`, `pipeio_registry_validate`, `pipeio_docs_collect`, `pipeio_docs_nav`, `pipeio_contracts_validate`.
+Tools exposed via projio's MCP server (35 tools across 7 categories):
+
+**Flow & registry:** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_registry_scan`, `pipeio_registry_validate`
+
+**Notebook lifecycle:** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_sync`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
+
+**Mod management:** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_create` (with I/O wiring + PipelineContext support)
+
+**Rule authoring:** `pipeio_rule_list`, `pipeio_rule_stub`, `pipeio_rule_insert`, `pipeio_rule_update`
+
+**Config authoring:** `pipeio_config_read`, `pipeio_config_patch`, `pipeio_config_init`
+
+**Execution & tracking:** `pipeio_dag`, `pipeio_completion`, `pipeio_cross_flow`, `pipeio_log_parse`, `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`, `pipeio_contracts_validate`
+
+**Documentation:** `pipeio_docs_collect`, `pipeio_docs_nav`, `pipeio_mkdocs_nav_patch`, `pipeio_modkey_bib`
 
 ## Source Layout
 

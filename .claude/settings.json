@@ -14,5 +14,11 @@
     "Bash(make:*)",
     "mcp__projio__*",
     "mcp__worklog__*"
-  ]
+  ],
+  "permissions": {
+    "allow": [
+      "mcp__projio__*",
+      "mcp__worklog__*"
+    ]
+  }
 }

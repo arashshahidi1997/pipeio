@@ -9,6 +9,7 @@ from pipeio.registry import (
     ValidationResult,
     slug_ok,
 )
+from pipeio.smk_log import setup_logging
 from pipeio.resolver import (
     PathResolver,
     PipelineContext,
@@ -33,5 +34,6 @@ __all__ = [
     "SimpleResolver",
     "Stage",
     "ValidationResult",
+    "setup_logging",
     "slug_ok",
 ]
