@@ -12,6 +12,9 @@ class NotebookEntry(BaseModel):
     """A single notebook entry in ``notebook.yml``."""
 
     path: str
+    kind: str = ""
+    description: str = ""
+    status: str = "active"
     pair_ipynb: bool = False
     pair_myst: bool = False
     publish_myst: bool = False

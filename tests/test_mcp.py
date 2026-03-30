@@ -676,7 +676,7 @@ def test_mcp_config_patch_params_entry(tmp_path):
     assert written["filter"]["notch_freq"] == 50
 
 
-def test_mcp_config_patch_anchor_warning(tmp_path):
+def test_mcp_config_patch_preserves_anchors(tmp_path):
     from pipeio.mcp import mcp_config_patch
 
     _scaffold_config_project(tmp_path, _CONFIG_WITH_ANCHORS)
@@ -687,8 +687,392 @@ def test_mcp_config_patch_anchor_warning(tmp_path):
         }
     }
     result = mcp_config_patch(
-        tmp_path, pipe="preproc", flow="denoise", registry_entry=new_group
+        tmp_path, pipe="preproc", flow="denoise",
+        registry_entry=new_group, apply=True,
     )
 
     assert result["valid"] is True
-    assert any("anchor" in w.lower() for w in result["warnings"])
+    assert result["applied"] is True
+    # No anchor warnings — ruamel round-trip preserves them
+    assert not result["warnings"]
+
+    # Verify anchors and aliases survive the round-trip
+    cfg_path = tmp_path / "code" / "pipelines" / "preproc" / "denoise" / "config.yml"
+    written = cfg_path.read_text()
+    assert "&base_ieeg" in written
+    assert "*base_ieeg" in written
+
+
+def test_mcp_config_patch_preserves_comments(tmp_path):
+    from pipeio.mcp import mcp_config_patch
+
+    config_with_comments = """\
+# Pipeline configuration
+input_dir: sourcedata
+output_dir: derivatives/preproc  # output location
+
+pybids_inputs:
+  ieeg:
+    wildcards:
+      - subject
+      - session
+
+# Output registry
+registry:
+  ieeg_raw:
+    base_input: ieeg
+    bids:
+      root: output_dir
+      datatype: ieeg
+    members:
+      fif: {suffix: ieeg, extension: .fif}
+"""
+    _scaffold_config_project(tmp_path, config_with_comments)
+    new_group = {
+        "extra": {
+            "base_input": "ieeg",
+            "members": {"out": {"suffix": "out", "extension": ".npy"}},
+        }
+    }
+    result = mcp_config_patch(
+        tmp_path, pipe="preproc", flow="denoise",
+        registry_entry=new_group, apply=True,
+    )
+
+    assert result["valid"] is True
+    cfg_path = tmp_path / "code" / "pipelines" / "preproc" / "denoise" / "config.yml"
+    written = cfg_path.read_text()
+    assert "# Pipeline configuration" in written
+    assert "# output location" in written
+    assert "# Output registry" in written
+
+
+def test_mcp_config_patch_preserves_unreferenced_anchors(tmp_path):
+    from pipeio.mcp import mcp_config_patch
+
+    config_with_unreferenced = """\
+_member_sets:
+  log_default: &log_default
+    suffix: log
+    extension: .txt
+  base_ieeg: &base_ieeg
+    suffix: ieeg
+    extension: .fif
+
+pybids_inputs:
+  ieeg:
+    wildcards:
+      - subject
+
+registry:
+  ieeg_raw:
+    base_input: ieeg
+    bids:
+      root: output_dir
+    members:
+      fif:
+        <<: *base_ieeg
+"""
+    _scaffold_config_project(tmp_path, config_with_unreferenced)
+    new_group = {
+        "extra": {
+            "base_input": "ieeg",
+            "members": {"out": {"suffix": "out", "extension": ".npy"}},
+        }
+    }
+    result = mcp_config_patch(
+        tmp_path, pipe="preproc", flow="denoise",
+        registry_entry=new_group, apply=True,
+    )
+
+    assert result["valid"] is True
+    cfg_path = tmp_path / "code" / "pipelines" / "preproc" / "denoise" / "config.yml"
+    written = cfg_path.read_text()
+    # Referenced anchor preserved
+    assert "&base_ieeg" in written
+    assert "*base_ieeg" in written
+    # Unreferenced anchor also preserved
+    assert "&log_default" in written
+
+
+# ---------------------------------------------------------------------------
+# _config_path_to_expr passthrough
+# ---------------------------------------------------------------------------
+
+def test_config_path_to_expr_passthrough():
+    from pipeio.mcp import _config_path_to_expr
+
+    # Dot-path gets converted
+    assert _config_path_to_expr("ttl_removal.ttl_freq") == 'config["ttl_removal"]["ttl_freq"]'
+
+    # Already a config expression — passed through verbatim
+    raw = 'config["ttl_removal"]["ttl_freq"]'
+    assert _config_path_to_expr(raw) == raw
+
+    # Expression with function call — passed through
+    assert _config_path_to_expr("int(config['x'])") == "int(config['x'])"
+
+
+# ---------------------------------------------------------------------------
+# mcp_nb_update
+# ---------------------------------------------------------------------------
+
+def _scaffold_notebook_project(root: Path) -> Path:
+    """Scaffold project with a flow that has a notebook.yml."""
+    _scaffold_project(root)
+    flow_dir = root / "code" / "pipelines" / "preproc" / "denoise"
+    nb_dir = flow_dir / "notebooks"
+    nb_dir.mkdir(parents=True, exist_ok=True)
+
+    (nb_dir / "investigate_noise.py").write_text("# %% [markdown]\n# Hello\n")
+    nb_cfg = {
+        "publish": {"format": "html", "docs_dir": "", "prefix": ""},
+        "entries": [
+            {
+                "path": "notebooks/investigate_noise.py",
+                "kind": "investigate",
+                "description": "Check noise patterns",
+                "status": "active",
+                "pair_ipynb": True,
+                "pair_myst": False,
+                "publish_myst": False,
+                "publish_html": False,
+            }
+        ],
+    }
+    (nb_dir / "notebook.yml").write_text(
+        yaml.safe_dump(nb_cfg, sort_keys=False), encoding="utf-8"
+    )
+    return root
+
+
+def test_mcp_nb_status_includes_metadata(tmp_path):
+    from pipeio.mcp import mcp_nb_status
+
+    _scaffold_notebook_project(tmp_path)
+    result = mcp_nb_status(tmp_path)
+
+    assert result["flows"]
+    nb = result["flows"][0]["notebooks"][0]
+    assert nb["name"] == "investigate_noise"
+    assert nb["kind"] == "investigate"
+    assert nb["description"] == "Check noise patterns"
+    assert nb["status"] == "active"
+
+
+def test_mcp_nb_update_changes_status(tmp_path):
+    from pipeio.mcp import mcp_nb_update
+
+    _scaffold_notebook_project(tmp_path)
+    result = mcp_nb_update(
+        tmp_path, pipe="preproc", flow="denoise",
+        name="investigate_noise", status="stale",
+    )
+
+    assert result["updated_fields"] == ["status"]
+    assert result["entry"]["status"] == "stale"
+
+    # Verify persisted
+    from pipeio.notebook.config import NotebookConfig
+    nb_cfg_path = (
+        tmp_path / "code" / "pipelines" / "preproc" / "denoise"
+        / "notebooks" / "notebook.yml"
+    )
+    nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+    assert nb_cfg.entries[0].status == "stale"
+
+
+def test_mcp_nb_update_preserves_other_fields(tmp_path):
+    from pipeio.mcp import mcp_nb_update
+
+    _scaffold_notebook_project(tmp_path)
+    result = mcp_nb_update(
+        tmp_path, pipe="preproc", flow="denoise",
+        name="investigate_noise", description="Updated description",
+    )
+
+    assert result["entry"]["description"] == "Updated description"
+    assert result["entry"]["kind"] == "investigate"
+    assert result["entry"]["status"] == "active"
+    assert result["entry"]["pair_ipynb"] is True
+
+
+def test_mcp_nb_update_not_found(tmp_path):
+    from pipeio.mcp import mcp_nb_update
+
+    _scaffold_notebook_project(tmp_path)
+    result = mcp_nb_update(
+        tmp_path, pipe="preproc", flow="denoise",
+        name="nonexistent", status="stale",
+    )
+
+    assert "error" in result
+
+
+def test_mcp_nb_update_no_fields(tmp_path):
+    from pipeio.mcp import mcp_nb_update
+
+    _scaffold_notebook_project(tmp_path)
+    result = mcp_nb_update(
+        tmp_path, pipe="preproc", flow="denoise",
+        name="investigate_noise",
+    )
+
+    assert "error" in result
+
+
+def test_mcp_nb_create_persists_metadata(tmp_path):
+    from pipeio.mcp import mcp_nb_create
+
+    _scaffold_project(tmp_path)
+    result = mcp_nb_create(
+        tmp_path, pipe="preproc", flow="denoise",
+        name="explore_lfp", kind="explore",
+        description="Explore LFP band power",
+    )
+
+    assert "error" not in result
+
+    from pipeio.notebook.config import NotebookConfig
+    nb_cfg_path = (
+        tmp_path / "code" / "pipelines" / "preproc" / "denoise"
+        / "notebooks" / "notebook.yml"
+    )
+    nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+    entry = nb_cfg.entries[0]
+    assert entry.kind == "explore"
+    assert entry.description == "Explore LFP band power"
+    assert entry.status == "active"
+
+
+# ---------------------------------------------------------------------------
+# mcp_mod_context
+# ---------------------------------------------------------------------------
+
+def _scaffold_mod_context_project(root: Path) -> Path:
+    """Scaffold project with mod, scripts, docs, and config for mod_context tests."""
+    pipeio_dir = root / ".pipeio"
+    pipeio_dir.mkdir(parents=True)
+
+    flow_dir = root / "code" / "pipelines" / "preproc" / "denoise"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "Snakefile").write_text(_SNAKEFILE_WITH_NAMED_SECTIONS, encoding="utf-8")
+
+    # Config with filter params
+    (flow_dir / "config.yml").write_text(
+        "input_dir: sourcedata\n"
+        "output_dir: derivatives/preproc\n"
+        "filter:\n"
+        "  freq: 50\n"
+        "  order: 4\n"
+        "pybids_inputs:\n"
+        "  eeg:\n"
+        "    wildcards:\n"
+        "      - subject\n"
+        "registry:\n"
+        "  deriv:\n"
+        "    base_input: eeg\n"
+        "    bids:\n"
+        "      root: derivatives\n"
+        "    members:\n"
+        "      cleaned: {suffix: cleaned, extension: .fif}\n",
+        encoding="utf-8",
+    )
+
+    # Scripts
+    scripts_dir = flow_dir / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "filter_raw.py").write_text(
+        "import mne\n# filter raw data\n", encoding="utf-8"
+    )
+    (scripts_dir / "filter_notch.py").write_text(
+        "import mne\n# notch filter\n", encoding="utf-8"
+    )
+
+    # Mod doc
+    doc_dir = root / "docs" / "pipelines" / "pipe-preproc" / "flow-denoise" / "mod-filter"
+    doc_dir.mkdir(parents=True)
+    (doc_dir / "index.md").write_text("# Filter Module\nApplies filtering.\n", encoding="utf-8")
+
+    reg = {
+        "flows": {
+            "preproc/denoise": {
+                "name": "denoise",
+                "pipe": "preproc",
+                "code_path": "code/pipelines/preproc/denoise",
+                "config_path": "code/pipelines/preproc/denoise/config.yml",
+                "mods": {
+                    "filter": {
+                        "name": "filter",
+                        "rules": ["filter_raw", "filter_notch"],
+                        "doc_path": None,
+                    }
+                },
+            }
+        }
+    }
+    (pipeio_dir / "registry.yml").write_text(yaml.safe_dump(reg), encoding="utf-8")
+    return root
+
+
+def test_mcp_mod_context_returns_rules(tmp_path):
+    from pipeio.mcp import mcp_mod_context
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_context(tmp_path, pipe="preproc", flow="denoise", mod="filter")
+
+    assert "error" not in result
+    assert result["mod"] == "filter"
+    assert len(result["rules"]) == 2
+    rule_names = {r["name"] for r in result["rules"]}
+    assert rule_names == {"filter_raw", "filter_notch"}
+
+
+def test_mcp_mod_context_reads_scripts(tmp_path):
+    from pipeio.mcp import mcp_mod_context
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_context(tmp_path, pipe="preproc", flow="denoise", mod="filter")
+
+    assert "scripts/filter_raw.py" in result["scripts"]
+    assert "import mne" in result["scripts"]["scripts/filter_raw.py"]
+    assert "scripts/filter_notch.py" in result["scripts"]
+
+
+def test_mcp_mod_context_reads_doc(tmp_path):
+    from pipeio.mcp import mcp_mod_context
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_context(tmp_path, pipe="preproc", flow="denoise", mod="filter")
+
+    assert result["doc"] is not None
+    assert "Filter Module" in result["doc"]
+
+
+def test_mcp_mod_context_extracts_config_params(tmp_path):
+    from pipeio.mcp import mcp_mod_context
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_context(tmp_path, pipe="preproc", flow="denoise", mod="filter")
+
+    assert "filter" in result["config_params"]
+    assert result["config_params"]["filter"]["freq"] == 50
+
+
+def test_mcp_mod_context_missing_mod(tmp_path):
+    from pipeio.mcp import mcp_mod_context
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_context(tmp_path, pipe="preproc", flow="denoise", mod="nonexistent")
+
+    assert "error" in result
+
+
+def test_mcp_mod_context_bids_signatures(tmp_path):
+    from pipeio.mcp import mcp_mod_context
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_context(tmp_path, pipe="preproc", flow="denoise", mod="filter")
+
+    assert "deriv" in result["bids_signatures"]
+    assert "cleaned" in result["bids_signatures"]["deriv"]

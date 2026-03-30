@@ -121,6 +121,11 @@ def mcp_nb_status(root: Path) -> dict[str, Any]:
         for nb in nb_cfg.entries:
             nb_path = flow_root / nb.path if not Path(nb.path).is_absolute() else Path(nb.path)
             info: dict[str, Any] = {"name": Path(nb.path).stem}
+            if nb.kind:
+                info["kind"] = nb.kind
+            if nb.description:
+                info["description"] = nb.description
+            info["status"] = nb.status
 
             # Check py file exists and get mtime
             py_path = nb_path if nb_path.suffix == ".py" else nb_path.with_suffix(".py")
@@ -147,6 +152,93 @@ def mcp_nb_status(root: Path) -> dict[str, Any]:
             })
 
     return {"flows": flow_statuses}
+
+
+def mcp_nb_update(
+    root: Path,
+    pipe: str,
+    flow: str,
+    name: str,
+    status: str | None = None,
+    description: str | None = None,
+    kind: str | None = None,
+) -> dict[str, Any]:
+    """Update notebook metadata (status, description, kind) in notebook.yml.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name.
+        name: Notebook name (stem, without extension).
+        status: New status (draft/active/stale/promoted/archived).
+        description: New one-line description.
+        kind: New kind (investigate/explore/demo/validate).
+    """
+    import yaml
+    from pipeio.notebook.config import NotebookConfig
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_root = Path(entry.config_path).parent if entry.config_path else None
+    if not flow_root:
+        return {"error": f"No config_path for {pipe}/{flow}"}
+    if not flow_root.is_absolute():
+        flow_root = root / flow_root
+
+    nb_cfg_path = flow_root / "notebooks" / "notebook.yml"
+    if not nb_cfg_path.exists():
+        return {"error": f"No notebook.yml found for {pipe}/{flow}"}
+
+    try:
+        nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+    except Exception as exc:
+        return {"error": f"Failed to parse notebook.yml: {exc}"}
+
+    # Find the entry by name
+    target = None
+    for nb in nb_cfg.entries:
+        if Path(nb.path).stem == name:
+            target = nb
+            break
+
+    if target is None:
+        return {"error": f"Notebook {name!r} not found in notebook.yml"}
+
+    # Update fields
+    updated_fields: list[str] = []
+    if status is not None:
+        target.status = status
+        updated_fields.append("status")
+    if description is not None:
+        target.description = description
+        updated_fields.append("description")
+    if kind is not None:
+        target.kind = kind
+        updated_fields.append("kind")
+
+    if not updated_fields:
+        return {"error": "No fields to update (pass status, description, or kind)"}
+
+    # Write back
+    nb_cfg_path.write_text(
+        yaml.dump(nb_cfg.model_dump(), sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    return {
+        "notebook": name,
+        "updated_fields": updated_fields,
+        "entry": target.model_dump(),
+    }
 
 
 def mcp_mod_list(root: Path, pipe: str, flow: str | None = None) -> dict[str, Any]:
@@ -253,6 +345,163 @@ def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
         results.append(result)
 
     return {"count": len(results), "results": results}
+
+
+def mcp_mod_context(
+    root: Path,
+    pipe: str,
+    flow: str | None = None,
+    mod: str = "",
+) -> dict[str, Any]:
+    """Bundled read context for a single mod: rules, scripts, doc, config.
+
+    Returns everything an agent needs to understand and work on a mod in one
+    call.  Composes from existing internals — no new data model or cache.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name (optional for single-flow pipes).
+        mod: Module name.
+    """
+    import re
+
+    import yaml
+    from pipeio.registry import PipelineRegistry
+
+    if not mod:
+        return {"error": "mod is required"}
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    mod_entry = entry.mods.get(mod)
+    if mod_entry is None:
+        return {"error": f"Mod {mod!r} not found in {pipe}/{entry.name}"}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    # --- Rules: parse and filter to this mod ---
+    rule_to_mod: dict[str, str] = {}
+    for mname, me in entry.mods.items():
+        for rname in me.rules:
+            rule_to_mod[rname] = mname
+
+    candidates: list[Path] = list(flow_dir.glob("*.smk"))
+    snakefile = flow_dir / "Snakefile"
+    if snakefile.exists():
+        candidates.insert(0, snakefile)
+
+    mod_rules: list[dict[str, Any]] = []
+    for sf in candidates:
+        try:
+            text = sf.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for rule_info in _parse_snakefile_rules(text):
+            rname = rule_info["name"]
+            rmatch = rule_to_mod.get(rname)
+            if rmatch is None:
+                m = _MOD_PREFIX_RE.match(rname)
+                rmatch = m.group(1) if m else rname
+            if rmatch == mod:
+                rule_info["mod"] = mod
+                rule_info["source_file"] = sf.name
+                mod_rules.append(rule_info)
+
+    # --- Scripts: read content for each unique script path ---
+    scripts: dict[str, str] = {}
+    for rule in mod_rules:
+        script_path = rule.get("script")
+        if script_path and script_path not in scripts:
+            abs_script = flow_dir / script_path
+            if abs_script.exists():
+                try:
+                    scripts[script_path] = abs_script.read_text(encoding="utf-8")
+                except Exception:
+                    scripts[script_path] = f"<read error>"
+
+    # --- Doc: read mod documentation ---
+    doc_content: str | None = None
+    doc_path_str, doc_exists = _resolve_mod_doc_path(root, pipe, entry.name, mod)
+    if mod_entry.doc_path and (root / mod_entry.doc_path).exists():
+        doc_path_str = mod_entry.doc_path
+        doc_exists = True
+    if doc_exists and doc_path_str:
+        try:
+            doc_content = (root / doc_path_str).read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    # --- Config params: extract referenced sections ---
+    config_params: dict[str, Any] = {}
+    if entry.config_path:
+        cfg_path = Path(entry.config_path)
+        if not cfg_path.is_absolute():
+            cfg_path = root / cfg_path
+        if cfg_path.exists():
+            try:
+                config = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                # Collect top-level config keys referenced by mod's params
+                for rule in mod_rules:
+                    for _pname, pexpr in (rule.get("params") or {}).items():
+                        # Extract config["section"] references
+                        for key_match in re.finditer(r'config\["([^"]+)"\]', str(pexpr)):
+                            section = key_match.group(1)
+                            if section in config and section not in config_params:
+                                config_params[section] = config[section]
+            except Exception:
+                pass
+
+    # --- Bids signatures for mod's output groups ---
+    bids_signatures: dict[str, dict[str, str]] = {}
+    if entry.config_path:
+        cfg_path = Path(entry.config_path)
+        if not cfg_path.is_absolute():
+            cfg_path = root / cfg_path
+        if cfg_path.exists():
+            try:
+                config = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                pybids_inputs = config.get("pybids_inputs") or {}
+                registry_data = config.get("registry") or {}
+                # Only include groups whose base_input rules overlap with this mod's rules
+                mod_rule_names = {r["name"] for r in mod_rules}
+                for group_name, group in registry_data.items():
+                    if not isinstance(group, dict):
+                        continue
+                    members = group.get("members") or {}
+                    group_sigs: dict[str, str] = {}
+                    for member_name, member in members.items():
+                        if isinstance(member, dict):
+                            group_sigs[member_name] = _render_bids_signature(
+                                group, pybids_inputs, member
+                            )
+                    if group_sigs:
+                        bids_signatures[group_name] = group_sigs
+            except Exception:
+                pass
+
+    return {
+        "pipe": entry.pipe,
+        "flow": entry.name,
+        "mod": mod,
+        "mod_meta": mod_entry.model_dump(),
+        "rules": mod_rules,
+        "scripts": scripts,
+        "doc_path": doc_path_str,
+        "doc": doc_content,
+        "config_params": config_params,
+        "bids_signatures": bids_signatures,
+    }
 
 
 def mcp_registry_scan(root: Path) -> dict[str, Any]:
@@ -564,6 +813,9 @@ def mcp_nb_create(
     if rel_nb not in existing_paths:
         nb_cfg.entries.append(NotebookEntry(
             path=rel_nb,
+            kind=kind,
+            description=description,
+            status="active",
             pair_ipynb=True,
             pair_myst=True,
             publish_myst=True,
@@ -952,7 +1204,13 @@ def _bids_call(kwargs: dict[str, Any]) -> str:
 
 
 def _config_path_to_expr(config_path: str) -> str:
-    """Convert ``'section.key'`` to ``config["section"]["key"]``."""
+    """Convert ``'section.key'`` to ``config["section"]["key"]``.
+
+    If *config_path* already looks like a Python expression (contains ``[``
+    or ``(``), it is returned verbatim to avoid double-wrapping.
+    """
+    if "[" in config_path or "(" in config_path:
+        return config_path
     expr = "config"
     for part in config_path.split("."):
         expr += f'["{part}"]'
@@ -1581,6 +1839,82 @@ def mcp_config_read(root: Path, pipe: str, flow: str | None = None) -> dict[str,
     }
 
 
+def _ruamel_preserve_anchors(data: Any) -> None:
+    """Mark all anchored nodes with ``always_dump=True``.
+
+    ruamel.yaml drops anchors that have no corresponding alias after
+    round-trip.  Walking the tree and setting ``always_dump`` on every
+    anchor preserves them even when unreferenced.
+    """
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    seen: set[int] = set()
+
+    def _walk(node: Any) -> None:
+        nid = id(node)
+        if nid in seen:
+            return
+        seen.add(nid)
+        if hasattr(node, "anchor") and node.anchor.value:
+            node.anchor.always_dump = True
+        if isinstance(node, CommentedMap):
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, (CommentedSeq, list)):
+            for item in node:
+                _walk(item)
+
+    _walk(data)
+
+
+def _ruamel_dump_str(data: Any) -> str:
+    """Serialize a ruamel.yaml object to string."""
+    from io import StringIO
+
+    from ruamel.yaml import YAML
+
+    _ruamel_preserve_anchors(data)
+    ryaml = YAML()
+    ryaml.preserve_quotes = True  # type: ignore[assignment]
+    buf = StringIO()
+    ryaml.dump(data, buf)
+    return buf.getvalue()
+
+
+def _ruamel_deep_update(
+    target: Any, source: dict[str, Any]
+) -> None:
+    """Recursively update *target* (a ruamel CommentedMap) from plain *source*.
+
+    New keys are inserted; existing dict values are merged recursively;
+    non-dict values are replaced.  Flow-style mappings in *source* are
+    converted to ``CommentedMap`` with ``fa.set_flow_style()`` so round-trip
+    serialization preserves them.
+    """
+    from ruamel.yaml.comments import CommentedMap
+
+    for key, value in source.items():
+        if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+            _ruamel_deep_update(target[key], value)
+        else:
+            if isinstance(value, dict):
+                cm = CommentedMap(value)
+                # Preserve flow style for small member dicts (e.g. {suffix: ieeg, extension: .fif})
+                if all(not isinstance(v, (dict, list)) for v in value.values()):
+                    cm.fa.set_flow_style()
+                else:
+                    # Recurse into nested dicts to convert them too
+                    for k, v in value.items():
+                        if isinstance(v, dict):
+                            inner = CommentedMap(v)
+                            if all(not isinstance(iv, (dict, list)) for iv in v.values()):
+                                inner.fa.set_flow_style()
+                            cm[k] = inner
+                target[key] = cm
+            else:
+                target[key] = value
+
+
 def mcp_config_patch(
     root: Path,
     pipe: str,
@@ -1595,10 +1929,8 @@ def mcp_config_patch(
     every ``base_input`` references an existing ``pybids_inputs`` key.  Returns
     a unified diff for review; set ``apply=True`` to write the patched file.
 
-    .. warning::
-       If the config uses YAML anchors (``&name`` / ``*ref``) the write-back
-       uses ``yaml.dump``, which resolves and inlines all anchors.  A warning
-       is included in the result when this situation is detected.
+    Uses ``ruamel.yaml`` round-trip mode to preserve comments, anchors/aliases,
+    flow-style mappings, blank lines, and key ordering.
 
     Args:
         root: Project root.
@@ -1611,6 +1943,8 @@ def mcp_config_patch(
     import difflib
 
     import yaml
+    from ruamel.yaml import YAML
+
     from pipeio.registry import PipelineRegistry
 
     registry_path = _find_registry(root)
@@ -1634,12 +1968,12 @@ def mcp_config_patch(
 
     try:
         original_text = cfg_path.read_text(encoding="utf-8")
+        # Use PyYAML for validation (resolves anchors for schema checking)
         config: dict[str, Any] = yaml.safe_load(original_text) or {}
     except Exception as exc:
         return {"error": f"Failed to parse config.yml: {exc}"}
 
     pybids_inputs: dict[str, Any] = config.get("pybids_inputs") or {}
-    has_anchors = _has_yaml_anchors(original_text)
 
     # Validate
     all_errors: list[str] = []
@@ -1658,27 +1992,34 @@ def mcp_config_patch(
             "applied": False,
         }
 
-    # Build patched config dict
-    patched: dict[str, Any] = dict(config)
-    if registry_entry:
-        current_registry: dict[str, Any] = dict(patched.get("registry") or {})
-        current_registry.update(registry_entry)
-        patched["registry"] = current_registry
+    # Round-trip load with ruamel to preserve formatting
+    ryaml = YAML()
+    ryaml.preserve_quotes = True  # type: ignore[assignment]
+    try:
+        patched = ryaml.load(original_text)
+        if patched is None:
+            from ruamel.yaml.comments import CommentedMap
+            patched = CommentedMap()
+    except Exception as exc:
+        return {"error": f"Failed to round-trip parse config.yml: {exc}"}
 
+    # Apply registry_entry into the round-trip structure
+    if registry_entry:
+        if "registry" not in patched:
+            from ruamel.yaml.comments import CommentedMap
+            patched["registry"] = CommentedMap()
+        _ruamel_deep_update(patched["registry"], registry_entry)
+
+    # Apply params_entry into the round-trip structure
     if params_entry:
         for section, values in params_entry.items():
             if section in patched and isinstance(patched[section], dict):
-                patched[section] = {**patched[section], **values}
+                _ruamel_deep_update(patched, {section: values})
             else:
                 patched[section] = values
 
     try:
-        patched_text = yaml.dump(
-            patched,
-            default_flow_style=False,
-            sort_keys=False,
-            allow_unicode=True,
-        )
+        patched_text = _ruamel_dump_str(patched)
     except Exception as exc:
         return {"error": f"Failed to serialize patched config: {exc}"}
 
@@ -1696,11 +2037,6 @@ def mcp_config_patch(
     diff = "".join(diff_lines)
 
     warnings: list[str] = []
-    if has_anchors:
-        warnings.append(
-            "Config uses YAML anchors (&/*) — applying this patch will resolve "
-            "and inline all anchor references. Review the diff carefully."
-        )
 
     applied = False
     if apply:

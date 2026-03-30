@@ -5,6 +5,7 @@ PYTHON  ?= python
 DATALAD ?= /storage/share/python/environments/Anaconda3/envs/labpy/bin/datalad
 MKDOCS  ?= /storage/share/python/environments/Anaconda3/envs/labpy/bin/python -m mkdocs
 PROJIO  ?= /storage/share/python/environments/Anaconda3/envs/rag/bin/python -m projio
+PUBLISH ?= /storage2/arash/infra/bin/publish_pypi.sh
 MSG     ?= Update
 
 .PHONY: save push url
