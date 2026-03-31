@@ -91,39 +91,66 @@ class PathResolver(Protocol):
 ### CLI Surface
 
 ```
-pipeio init                       — scaffold .pipeio/ in the current project
-pipeio flow list                  — list all flows
-pipeio flow new <pipe> <flow>     — scaffold a new flow
-pipeio nb pair|sync|exec|publish  — notebook lifecycle
-pipeio nb status                  — notebook sync/publish status
-pipeio registry scan              — discover flows from filesystem
-pipeio registry validate          — validate registry consistency
-pipeio contracts validate         — check pipeline I/O contracts
+pipeio init                              — scaffold .pipeio/ in the current project
+pipeio flow list [--pipe PIPE]           — list all flows
+pipeio flow new <pipe> <flow>            — scaffold a new flow
+pipeio flow ids                          — print flow names (for shell completion)
+pipeio flow path <flow>                  — print absolute code_path
+pipeio flow config <flow>                — print absolute config_path
+pipeio flow deriv <flow>                 — print absolute derivative directory
+pipeio flow smk <flow> [smk_args]        — run snakemake in flow context
+pipeio flow status <flow>                — show flow status (config, outputs, mods)
+pipeio flow targets <flow> [-g/-m/-e/-x] — resolve output paths for registry entries
+pipeio flow run <flow> [-c/-n/-f]        — launch snakemake in screen session
+pipeio flow log <flow> [--lines N]       — tail latest run log
+pipeio flow mods <flow>                  — list mods and rules
+pipeio nb pair|sync|exec|publish         — notebook lifecycle
+pipeio nb status                         — notebook sync/publish status
+pipeio registry scan                     — discover flows from filesystem
+pipeio registry validate                 — validate registry consistency
+pipeio contracts validate                — check pipeline I/O contracts
+pipeio docs collect                      — collect flow docs → docs/pipelines/
+pipeio docs nav                          — generate MkDocs nav fragment
 ```
+
+### `pf` Shell Helper
+
+The `pf` function (`bin/pf.sh`) provides quick flow navigation from the shell, similar to `wg` for projects. Source it in your shell profile.
+
+```bash
+pf                      # list all flows
+pf <flow>               # cd to flow's code directory
+pf <flow> smk [args]    # run snakemake in flow context
+pf <flow> deriv         # cd to derivative directory
+```
+
+Includes bash/zsh completion for flow names.
 
 ### MCP Tool Surface
 
-Tools exposed via projio's MCP server (35 tools across 7 categories):
+Tools exposed via projio's MCP server (39 tools across 10 categories):
 
-**Flow & registry:** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_registry_scan`, `pipeio_registry_validate`
+**Flow & registry (4):** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_registry_scan`, `pipeio_registry_validate`
 
-**Notebook lifecycle:** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_sync`, `pipeio_nb_diff`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
+**Notebook lifecycle (9):** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_update`, `pipeio_nb_sync`, `pipeio_nb_diff`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
 
-**Mod management:** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_create` (with I/O wiring + PipelineContext support)
+**Mod management (4):** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_context`, `pipeio_mod_create` (with I/O wiring + PipelineContext support)
 
-**Rule authoring:** `pipeio_rule_list`, `pipeio_rule_stub`, `pipeio_rule_insert`, `pipeio_rule_update`
+**Rule authoring (4):** `pipeio_rule_list`, `pipeio_rule_stub`, `pipeio_rule_insert`, `pipeio_rule_update`
 
-**Config authoring:** `pipeio_config_read`, `pipeio_config_patch`, `pipeio_config_init`
+**Config authoring (3):** `pipeio_config_read`, `pipeio_config_patch`, `pipeio_config_init`
 
-**Path resolution:** `pipeio_target_paths`
+**Path resolution (1):** `pipeio_target_paths`
 
-**Contracts & tracking:** `pipeio_contracts_validate`, `pipeio_cross_flow`, `pipeio_completion`
+**Contracts & tracking (3):** `pipeio_contracts_validate`, `pipeio_cross_flow`, `pipeio_completion`
 
-**Adapters** *(thin wrappers, may migrate to datalad run)*: `pipeio_dag_export`, `pipeio_log_parse`, `pipeio_config_init`
+**DAG & reporting (2):** `pipeio_dag_export`, `pipeio_report`
 
-**Deprecated** *(to be replaced by datalad run)*: `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`
+**Logging (1):** `pipeio_log_parse`
 
-**Documentation:** `pipeio_docs_collect`, `pipeio_docs_nav`, `pipeio_mkdocs_nav_patch`, `pipeio_modkey_bib`
+**Documentation (4):** `pipeio_docs_collect`, `pipeio_docs_nav`, `pipeio_mkdocs_nav_patch`, `pipeio_modkey_bib`
+
+**Execution (4)** *(deprecated — to be replaced by datalad run)*: `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`
 
 ## Source Layout
 

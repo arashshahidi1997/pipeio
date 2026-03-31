@@ -566,19 +566,55 @@ def _cmd_nb_pair(args: argparse.Namespace) -> int:
 
 
 def _cmd_nb_sync(args: argparse.Namespace) -> int:
-    from pipeio.notebook.lifecycle import nb_sync
+    root = Path(args.root) if args.root else _find_root()
+    direction = getattr(args, "direction", "py2nb")
+    force = getattr(args, "force", False)
+
+    if direction == "nb2py" or force:
+        from pipeio.notebook.lifecycle import find_notebook_configs, nb_sync_one
+        try:
+            for flow_root, cfg in find_notebook_configs(root):
+                for entry in cfg.entries:
+                    py_path = flow_root / entry.path
+                    result = nb_sync_one(py_path, direction=direction, force=force)
+                    if result.get("synced"):
+                        for p in result.get("generated", result.get("updated", [])):
+                            print(f"  synced: {p}")
+                    elif result.get("error"):
+                        print(f"  skip: {py_path.stem}: {result['error']}")
+        except ImportError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    else:
+        from pipeio.notebook.lifecycle import nb_sync
+        try:
+            updated = nb_sync(root)
+        except ImportError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if updated:
+            for p in updated:
+                print(f"  synced: {p}")
+        else:
+            print("All notebooks are up-to-date.")
+    return 0
+
+
+def _cmd_nb_diff(args: argparse.Namespace) -> int:
+    from pipeio.notebook.lifecycle import find_notebook_configs, nb_diff
 
     root = Path(args.root) if args.root else _find_root()
-    try:
-        updated = nb_sync(root)
-    except ImportError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-    if updated:
-        for p in updated:
-            print(f"  synced: {p}")
-    else:
-        print("All notebooks are up-to-date.")
+    found = False
+    for flow_root, cfg in find_notebook_configs(root):
+        for entry in cfg.entries:
+            py_path = flow_root / entry.path
+            result = nb_diff(py_path)
+            status = result.get("status", "unknown")
+            rec = result.get("recommendation", "")
+            print(f"  {py_path.stem}: {status} — {rec}")
+            found = True
+    if not found:
+        print("No notebooks found.")
     return 0
 
 
@@ -769,7 +805,14 @@ def main(argv: list[str] | None = None) -> int:
     nb_pair_p = nb_sub.add_parser("pair", help="Pair .py notebooks with ipynb/myst")
     nb_pair_p.add_argument("--force", action="store_true", help="Re-create existing pairs")
 
-    nb_sub.add_parser("sync", help="Sync notebook formats")
+    nb_sync_p = nb_sub.add_parser("sync", help="Sync notebook formats")
+    nb_sync_p.add_argument(
+        "--direction", choices=["py2nb", "nb2py"], default="py2nb",
+        help="Sync direction: py2nb (default) or nb2py (human edits → .py)",
+    )
+    nb_sync_p.add_argument("--force", action="store_true", help="Sync even if up-to-date")
+
+    nb_sub.add_parser("diff", help="Show sync state between .py and .ipynb")
     nb_sub.add_parser("exec", help="Execute notebooks")
     nb_sub.add_parser("publish", help="Publish notebooks to docs")
     nb_sub.add_parser("status", help="Show notebook sync status")
@@ -852,6 +895,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_nb_pair(args)
         if args.nb_command == "sync":
             return _cmd_nb_sync(args)
+        if args.nb_command == "diff":
+            return _cmd_nb_diff(args)
         if args.nb_command == "exec":
             return _cmd_nb_exec(args)
         if args.nb_command == "publish":
