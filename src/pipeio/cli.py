@@ -624,7 +624,7 @@ def _cmd_nb_lab(args: argparse.Namespace) -> int:
     root = Path(args.root) if args.root else _find_root()
     pipe = getattr(args, "pipe", None)
     flow = getattr(args, "flow", None)
-    do_sync = not getattr(args, "no_sync", False)
+    do_sync = getattr(args, "sync", False)
     refresh_only = getattr(args, "refresh", False)
 
     try:
@@ -853,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
     nb_lab_p = nb_sub.add_parser("lab", help="Build symlink manifest and launch Jupyter Lab")
     nb_lab_p.add_argument("--pipe", help="Filter to a specific pipeline")
     nb_lab_p.add_argument("--flow", help="Filter to a specific flow")
-    nb_lab_p.add_argument("--no-sync", action="store_true", help="Skip py→ipynb sync before linking")
+    nb_lab_p.add_argument("--sync", action="store_true", help="Sync py→ipynb before linking")
     nb_lab_p.add_argument("--refresh", action="store_true", help="Refresh manifest only (no Jupyter launch)")
 
     # pipeio registry {scan,validate}

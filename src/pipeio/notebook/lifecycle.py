@@ -423,7 +423,7 @@ def nb_lab(
     pipe: str | None = None,
     flow: str | None = None,
     lab_dir: Path | None = None,
-    sync: bool = True,
+    sync: bool = False,
     python_bin: str | None = None,
 ) -> dict[str, Any]:
     """Build a symlink manifest of active .ipynb notebooks and return its state.
@@ -443,7 +443,8 @@ def nb_lab(
     lab_dir : Path | None
         Manifest directory (default: ``<root>/.projio/pipeio/lab``).
     sync : bool
-        If True (default), sync py→ipynb before linking so notebooks are fresh.
+        If True, sync py→ipynb before linking so notebooks are fresh
+        (default False).
     python_bin : str | None
         Python binary where jupytext is installed (for sync).
     """
