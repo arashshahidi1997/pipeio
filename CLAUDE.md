@@ -107,7 +107,7 @@ Tools exposed via projio's MCP server (35 tools across 7 categories):
 
 **Flow & registry:** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_registry_scan`, `pipeio_registry_validate`
 
-**Notebook lifecycle:** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_sync`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
+**Notebook lifecycle:** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_sync`, `pipeio_nb_diff`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
 
 **Mod management:** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_create` (with I/O wiring + PipelineContext support)
 

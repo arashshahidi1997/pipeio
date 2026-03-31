@@ -224,6 +224,188 @@ def nb_publish(root: Path) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Single-notebook sync (bidirectional)
+# ---------------------------------------------------------------------------
+
+def nb_sync_one(
+    py_path: Path,
+    *,
+    direction: str = "py2nb",
+    formats: list[str] | None = None,
+    force: bool = False,
+    python_bin: str | None = None,
+) -> dict[str, Any]:
+    """Sync a single notebook, optionally in either direction.
+
+    Parameters
+    ----------
+    py_path : Path
+        The percent-format ``.py`` source file.
+    direction : str
+        ``"py2nb"`` (default) — regenerate ``.ipynb`` / ``.md`` from ``.py``.
+        ``"nb2py"`` — update ``.py`` from the paired ``.ipynb``.
+    formats : list[str] | None
+        Which paired formats to produce/consume (default ``["ipynb", "myst"]``).
+        Only used for ``py2nb`` direction.
+    force : bool
+        If False (default), skip files that are already up-to-date (mtime check).
+    python_bin : str | None
+        Python binary where jupytext is installed (optional).
+
+    Returns
+    -------
+    dict with keys: synced (bool), source, generated/updated (list[str]),
+    direction, skipped (bool if nothing needed).
+    """
+    if formats is None:
+        formats = ["ipynb", "myst"]
+
+    _require_jupytext(python_bin=python_bin)
+
+    if direction == "nb2py":
+        return _sync_nb2py(py_path, force=force, python_bin=python_bin)
+    elif direction == "py2nb":
+        return _sync_py2nb(py_path, formats=formats, force=force, python_bin=python_bin)
+    else:
+        return {"error": f"Unknown direction: {direction!r}. Use 'py2nb' or 'nb2py'."}
+
+
+def _sync_py2nb(
+    py_path: Path,
+    *,
+    formats: list[str],
+    force: bool = False,
+    python_bin: str | None = None,
+) -> dict[str, Any]:
+    """Sync .py → .ipynb / .myst."""
+    if not py_path.exists():
+        return {"error": f"Source not found: {py_path}"}
+
+    py_mtime = py_path.stat().st_mtime
+    generated: list[str] = []
+
+    if "ipynb" in formats:
+        ipynb_path = py_path.with_suffix(".ipynb")
+        if force or not ipynb_path.exists() or ipynb_path.stat().st_mtime < py_mtime:
+            _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path), python_bin=python_bin)
+            generated.append(str(ipynb_path))
+
+    if "myst" in formats:
+        myst_path = py_path.with_suffix(".md")
+        if force or not myst_path.exists() or myst_path.stat().st_mtime < py_mtime:
+            _jupytext(py_path, "--to", "myst", "--output", str(myst_path), python_bin=python_bin)
+            generated.append(str(myst_path))
+
+    return {
+        "synced": bool(generated),
+        "skipped": not generated,
+        "direction": "py2nb",
+        "source": str(py_path),
+        "generated": generated,
+    }
+
+
+def _sync_nb2py(
+    py_path: Path,
+    *,
+    force: bool = False,
+    python_bin: str | None = None,
+) -> dict[str, Any]:
+    """Sync .ipynb → .py (reverse sync for human edits)."""
+    ipynb_path = py_path.with_suffix(".ipynb")
+    if not ipynb_path.exists():
+        return {"error": f"Paired notebook not found: {ipynb_path}"}
+
+    if not force and py_path.exists():
+        if py_path.stat().st_mtime >= ipynb_path.stat().st_mtime:
+            return {
+                "synced": False,
+                "skipped": True,
+                "direction": "nb2py",
+                "source": str(ipynb_path),
+                "reason": ".py is already newer than .ipynb",
+            }
+
+    _jupytext(ipynb_path, "--to", "py:percent", "--output", str(py_path), python_bin=python_bin)
+
+    return {
+        "synced": True,
+        "skipped": False,
+        "direction": "nb2py",
+        "source": str(ipynb_path),
+        "updated": [str(py_path)],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single-notebook diff (change detection)
+# ---------------------------------------------------------------------------
+
+def nb_diff(py_path: Path) -> dict[str, Any]:
+    """Compare sync state between ``.py`` and its paired ``.ipynb``.
+
+    Returns a dict describing which file is newer, whether they're in sync,
+    and the recommended sync direction.
+    """
+    ipynb_path = py_path.with_suffix(".ipynb")
+
+    result: dict[str, Any] = {
+        "py_path": str(py_path),
+        "ipynb_path": str(ipynb_path),
+        "py_exists": py_path.exists(),
+        "ipynb_exists": ipynb_path.exists(),
+    }
+
+    if not py_path.exists() and not ipynb_path.exists():
+        result["status"] = "missing"
+        result["recommendation"] = "Neither file exists"
+        return result
+
+    if py_path.exists() and not ipynb_path.exists():
+        result["status"] = "unpaired"
+        result["recommendation"] = "Run sync direction=py2nb to create .ipynb"
+        return result
+
+    if not py_path.exists() and ipynb_path.exists():
+        result["status"] = "orphaned_ipynb"
+        result["recommendation"] = "Run sync direction=nb2py to create .py"
+        return result
+
+    py_mtime = py_path.stat().st_mtime
+    ipynb_mtime = ipynb_path.stat().st_mtime
+    result["py_mtime"] = py_mtime
+    result["ipynb_mtime"] = ipynb_mtime
+
+    if py_mtime > ipynb_mtime:
+        result["status"] = "py_newer"
+        result["stale"] = "ipynb"
+        result["recommendation"] = "Run sync direction=py2nb"
+    elif ipynb_mtime > py_mtime:
+        result["status"] = "ipynb_newer"
+        result["stale"] = "py"
+        result["recommendation"] = "Run sync direction=nb2py (human edited .ipynb)"
+    else:
+        result["status"] = "synced"
+        result["recommendation"] = "Files are in sync"
+
+    # Check if ipynb has execution outputs
+    if ipynb_path.exists():
+        try:
+            nb_data = json.loads(ipynb_path.read_text(encoding="utf-8"))
+            code_cells = [c for c in nb_data.get("cells", []) if c.get("cell_type") == "code"]
+            result["executed"] = any(
+                c.get("outputs") or c.get("execution_count")
+                for c in code_cells
+            )
+            result["cell_count"] = len(nb_data.get("cells", []))
+            result["code_cell_count"] = len(code_cells)
+        except Exception:
+            pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

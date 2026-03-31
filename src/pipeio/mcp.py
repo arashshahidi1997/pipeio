@@ -91,8 +91,20 @@ def mcp_flow_status(root: Path, pipe: str, flow: str) -> dict[str, Any]:
     return result
 
 
-def mcp_nb_status(root: Path) -> dict[str, Any]:
-    """Show notebook sync and publication status."""
+def mcp_nb_status(
+    root: Path,
+    pipe: str | None = None,
+    flow: str | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Show notebook sync and publication status.
+
+    Args:
+        root: Project root.
+        pipe: Filter to a specific pipeline (optional).
+        flow: Filter to a specific flow (optional).
+        name: Filter to a specific notebook name (optional).
+    """
     from pipeio.registry import PipelineRegistry
 
     registry_path = _find_registry(root)
@@ -103,6 +115,12 @@ def mcp_nb_status(root: Path) -> dict[str, Any]:
     flow_statuses: list[dict[str, Any]] = []
 
     for entry in registry.list_flows():
+        # Apply pipe/flow filters
+        if pipe and entry.pipe != pipe:
+            continue
+        if flow and entry.name != flow:
+            continue
+
         if not entry.config_path:
             continue
         flow_root = Path(entry.config_path).parent
@@ -120,8 +138,13 @@ def mcp_nb_status(root: Path) -> dict[str, Any]:
 
         notebooks: list[dict[str, Any]] = []
         for nb in nb_cfg.entries:
+            nb_name = Path(nb.path).stem
+            # Apply name filter
+            if name and nb_name != name:
+                continue
+
             nb_path = flow_root / nb.path if not Path(nb.path).is_absolute() else Path(nb.path)
-            info: dict[str, Any] = {"name": Path(nb.path).stem}
+            info: dict[str, Any] = {"name": nb_name}
             if nb.kind:
                 info["kind"] = nb.kind
             if nb.description:
@@ -139,6 +162,9 @@ def mcp_nb_status(root: Path) -> dict[str, Any]:
                 info["ipynb_mtime"] = ipynb_path.stat().st_mtime
                 if "py_mtime" in info:
                     info["synced"] = info["ipynb_mtime"] >= info["py_mtime"]
+                    # Also detect reverse: ipynb newer means human edits
+                    if info["ipynb_mtime"] > info.get("py_mtime", 0):
+                        info["ipynb_has_newer_edits"] = True
                 else:
                     info["synced"] = True
             else:
@@ -851,6 +877,8 @@ def mcp_nb_sync(
     name: str,
     formats: list[str] | None = None,
     python_bin: str | None = None,
+    direction: str = "py2nb",
+    force: bool = False,
 ) -> dict[str, Any]:
     """Sync a specific notebook (jupytext pair + convert).
 
@@ -860,12 +888,13 @@ def mcp_nb_sync(
         flow: Flow name.
         name: Notebook basename (without extension).
         formats: Which formats to produce (default: ['ipynb', 'myst']).
+            Only used for py2nb direction.
         python_bin: Python binary where jupytext is installed (optional).
+        direction: 'py2nb' (default) regenerates .ipynb/.md from .py.
+            'nb2py' updates .py from the paired .ipynb (for human edits).
+        force: If False, skip files already up-to-date (mtime check).
     """
     from pipeio.registry import PipelineRegistry
-
-    if formats is None:
-        formats = ["ipynb", "myst"]
 
     registry_path = _find_registry(root)
     if not registry_path:
@@ -882,39 +911,94 @@ def mcp_nb_sync(
         flow_dir = root / flow_dir
 
     py_path = flow_dir / "notebooks" / f"{name}.py"
-    if not py_path.exists():
+
+    # For nb2py direction, the .ipynb must exist (not the .py)
+    if direction == "py2nb" and not py_path.exists():
         return {"error": f"Notebook not found: notebooks/{name}.py"}
+    if direction == "nb2py" and not py_path.with_suffix(".ipynb").exists():
+        return {"error": f"Paired notebook not found: notebooks/{name}.ipynb"}
 
     try:
-        from pipeio.notebook.lifecycle import _require_jupytext, _jupytext
-        _require_jupytext(python_bin=python_bin)
+        from pipeio.notebook.lifecycle import nb_sync_one
     except ImportError as exc:
         return {"error": str(exc)}
 
-    generated: list[str] = []
+    result = nb_sync_one(
+        py_path,
+        direction=direction,
+        formats=formats,
+        force=force,
+        python_bin=python_bin,
+    )
 
-    if "ipynb" in formats:
-        ipynb_path = py_path.with_suffix(".ipynb")
-        _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path), python_bin=python_bin)
+    # Relativize paths for cleaner output
+    def _rel(p: str) -> str:
         try:
-            generated.append(str(ipynb_path.relative_to(root)))
+            return str(Path(p).relative_to(root))
         except ValueError:
-            generated.append(str(ipynb_path))
+            return p
 
-    if "myst" in formats:
-        myst_path = py_path.with_suffix(".md")
-        _jupytext(py_path, "--to", "myst", "--output", str(myst_path), python_bin=python_bin)
+    if "source" in result:
+        result["source"] = _rel(result["source"])
+    for key in ("generated", "updated"):
+        if key in result:
+            result[key] = [_rel(p) for p in result[key]]
+
+    return result
+
+
+def mcp_nb_diff(
+    root: Path,
+    pipe: str,
+    flow: str,
+    name: str,
+) -> dict[str, Any]:
+    """Show sync state between .py and paired .ipynb for a notebook.
+
+    Returns which file is newer, whether they're in sync, and the
+    recommended sync direction. Useful before deciding whether to
+    sync and in which direction.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name.
+        name: Notebook basename (without extension).
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    py_path = flow_dir / "notebooks" / f"{name}.py"
+
+    from pipeio.notebook.lifecycle import nb_diff
+
+    result = nb_diff(py_path)
+
+    # Relativize paths
+    def _rel(p: str) -> str:
         try:
-            generated.append(str(myst_path.relative_to(root)))
+            return str(Path(p).relative_to(root))
         except ValueError:
-            generated.append(str(myst_path))
+            return p
 
-    return {
-        "synced": True,
-        "source": str(py_path.relative_to(root)),
-        "generated": generated,
-        "formats": formats,
-    }
+    for key in ("py_path", "ipynb_path"):
+        if key in result:
+            result[key] = _rel(result[key])
+
+    return result
 
 
 def mcp_nb_publish(
