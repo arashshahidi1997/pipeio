@@ -645,6 +645,7 @@ def _cmd_nb_lab(args: argparse.Namespace) -> int:
         return 0
 
     # Launch Jupyter Lab
+    import subprocess
     print(f"\nStarting Jupyter Lab in {lab_dir} ...")
     subprocess.run(["jupyter", "lab"], cwd=lab_dir)
     return 0
