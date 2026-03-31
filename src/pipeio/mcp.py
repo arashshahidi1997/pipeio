@@ -130,6 +130,109 @@ def mcp_flow_deregister(
     }
 
 
+def mcp_flow_fork(
+    root: Path,
+    pipe: str,
+    flow: str,
+    new_flow: str,
+    new_pipe: str | None = None,
+) -> dict[str, Any]:
+    """Fork a flow: copy its code directory and register as a new flow.
+
+    Creates a full copy of the flow's code (Snakefile, config, notebooks,
+    scripts) under the new name.  The original flow is untouched.
+
+    Args:
+        root: Project root.
+        pipe: Source pipeline name.
+        flow: Source flow name.
+        new_flow: Name for the forked flow.
+        new_pipe: Target pipe (default: same as source).
+    """
+    import shutil
+
+    from pipeio.registry import FlowEntry, PipelineRegistry
+
+    if new_pipe is None:
+        new_pipe = pipe
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+
+    # Validate source exists
+    try:
+        source = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    # Check target doesn't conflict
+    target_key = f"{new_pipe}/{new_flow}"
+    if target_key in registry.flows:
+        return {"error": f"Flow already exists: {target_key}"}
+
+    # Resolve source code directory
+    src_dir = Path(source.code_path)
+    if not src_dir.is_absolute():
+        src_dir = root / src_dir
+
+    if not src_dir.exists():
+        return {"error": f"Source code directory not found: {src_dir}"}
+
+    # Compute target code directory (sibling of source, under new_pipe if changed)
+    if new_pipe == pipe:
+        dst_dir = src_dir.parent / new_flow
+    else:
+        dst_dir = src_dir.parent.parent / new_pipe / new_flow
+
+    if dst_dir.exists():
+        return {"error": f"Target directory already exists: {dst_dir}"}
+
+    # Copy the code directory
+    shutil.copytree(src_dir, dst_dir)
+
+    # Build new registry entry with updated paths
+    try:
+        new_code_path = str(dst_dir.relative_to(root))
+    except ValueError:
+        new_code_path = str(dst_dir)
+
+    new_config_path = None
+    if source.config_path:
+        new_config_path = source.config_path.replace(
+            source.code_path, new_code_path
+        )
+
+    new_doc_path = None
+    if source.doc_path:
+        new_doc_path = source.doc_path.replace(
+            f"{pipe}/{flow}", f"{new_pipe}/{new_flow}"
+        )
+
+    new_entry = FlowEntry(
+        name=new_flow,
+        pipe=new_pipe,
+        code_path=new_code_path,
+        config_path=new_config_path,
+        doc_path=new_doc_path,
+        mods=source.mods.copy(),
+        app_type=source.app_type,
+    )
+
+    registry.flows[target_key] = new_entry
+    registry.to_yaml(registry_path)
+
+    return {
+        "forked": True,
+        "source": f"{pipe}/{flow}",
+        "target": target_key,
+        "code_path": new_code_path,
+        "mods": list(new_entry.mods.keys()) if new_entry.mods else [],
+    }
+
+
 def mcp_nb_status(
     root: Path,
     pipe: str | None = None,

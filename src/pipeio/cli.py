@@ -483,6 +483,25 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_flow_fork(args: argparse.Namespace) -> int:
+    from pipeio.mcp import mcp_flow_fork
+
+    root = Path(args.root) if args.root else _find_root()
+    result = mcp_flow_fork(
+        root, pipe=args.pipe, flow=args.flow,
+        new_flow=args.new_flow, new_pipe=getattr(args, "new_pipe", None),
+    )
+    if "error" in result:
+        print(result["error"], file=sys.stderr)
+        return 1
+
+    print(f"Forked: {result['source']} → {result['target']}")
+    print(f"  code_path: {result['code_path']}")
+    if result.get("mods"):
+        print(f"  mods: {', '.join(result['mods'])}")
+    return 0
+
+
 def _cmd_registry_scan(args: argparse.Namespace) -> int:
     from pipeio.registry import PipelineRegistry
 
@@ -846,6 +865,12 @@ def main(argv: list[str] | None = None) -> int:
     flow_new.add_argument("pipe", help="Pipeline name")
     flow_new.add_argument("flow", help="Flow name")
 
+    flow_fork_p = flow_sub.add_parser("fork", help="Fork (copy) an existing flow")
+    flow_fork_p.add_argument("pipe", help="Source pipeline name")
+    flow_fork_p.add_argument("flow", help="Source flow name")
+    flow_fork_p.add_argument("new_flow", help="Name for the forked flow")
+    flow_fork_p.add_argument("--new-pipe", help="Target pipe (default: same as source)")
+
     flow_ids = flow_sub.add_parser("ids", help="Print flow names (for shell completion)")
 
     flow_path = flow_sub.add_parser("path", help="Print code directory path for a flow")
@@ -958,6 +983,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_flow_list(args)
         if args.flow_command == "new":
             return _cmd_flow_new(args)
+        if args.flow_command == "fork":
+            return _cmd_flow_fork(args)
         if args.flow_command == "ids":
             return _cmd_flow_ids(args)
         if args.flow_command == "path":
