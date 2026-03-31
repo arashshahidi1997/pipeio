@@ -685,6 +685,31 @@ def nb_audit(root: Path, registered_only: bool = True) -> list[dict[str, Any]]:
                 if lines > 50:
                     record["issues"].append("draft_but_substantial")
 
+            # Lifecycle mismatch checks
+            is_exploratory = entry.kind in ("investigate", "explore")
+            is_demo = entry.kind in ("demo", "validate")
+
+            # Demo notebook should have publish_html enabled
+            if is_demo and not entry.publish_html:
+                record["issues"].append("demo_not_publishable")
+
+            # Exploratory notebook still active but mod already has scripts
+            if is_exploratory and entry.status == "active" and entry.mod:
+                if entry.mod in flow_mods:
+                    record["issues"].append("explore_absorbed_not_archived")
+
+            # Demo notebook active but not promoted (has been executed)
+            if is_demo and entry.status == "active" and record.get("executed"):
+                record["issues"].append("demo_executed_not_promoted")
+
+            # Promoted notebook without publish_html
+            if entry.status == "promoted" and not entry.publish_html:
+                record["issues"].append("promoted_not_publishable")
+
+            # Archived notebook still has publish_html on
+            if entry.status == "archived" and entry.publish_html:
+                record["issues"].append("archived_still_publishable")
+
             record["issue_count"] = len(record["issues"])
             records.append(record)
 
