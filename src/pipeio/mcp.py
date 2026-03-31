@@ -1001,6 +1001,43 @@ def mcp_nb_diff(
     return result
 
 
+def mcp_nb_lab(
+    root: Path,
+    pipe: str | None = None,
+    flow: str | None = None,
+    sync: bool = True,
+    python_bin: str | None = None,
+) -> dict[str, Any]:
+    """Build/refresh the Jupyter Lab symlink manifest.
+
+    Creates ``.projio/pipeio/lab/<pipe>/<flow>/<name>.ipynb`` symlinks
+    pointing to real notebook files.  Optionally syncs py→ipynb first.
+    Returns manifest state (linked notebooks, stale cleaned, lab_dir).
+
+    Args:
+        root: Project root.
+        pipe: Filter to a specific pipeline (optional).
+        flow: Filter to a specific flow (optional).
+        sync: If True (default), sync py→ipynb before linking.
+        python_bin: Python binary where jupytext is installed (optional).
+    """
+    from pipeio.notebook.lifecycle import nb_lab
+
+    result = nb_lab(
+        root, pipe=pipe, flow=flow,
+        sync=sync, python_bin=python_bin,
+    )
+
+    # Relativize target paths
+    for item in result.get("linked", []):
+        try:
+            item["target"] = str(Path(item["target"]).relative_to(root))
+        except ValueError:
+            pass
+
+    return result
+
+
 def mcp_nb_publish(
     root: Path,
     pipe: str,

@@ -618,6 +618,38 @@ def _cmd_nb_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_nb_lab(args: argparse.Namespace) -> int:
+    from pipeio.notebook.lifecycle import nb_lab
+
+    root = Path(args.root) if args.root else _find_root()
+    pipe = getattr(args, "pipe", None)
+    flow = getattr(args, "flow", None)
+    do_sync = not getattr(args, "no_sync", False)
+    refresh_only = getattr(args, "refresh", False)
+
+    try:
+        result = nb_lab(root, pipe=pipe, flow=flow, sync=do_sync)
+    except ImportError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    count = result.get("count", 0)
+    lab_dir = result.get("lab_dir", "")
+    print(f"Lab manifest: {lab_dir}  ({count} notebook(s) linked)")
+    for item in result.get("linked", []):
+        print(f"  {item['pipe']}/{item['flow']}/{item['name']}")
+    for s in result.get("stale_cleaned", []):
+        print(f"  removed stale: {s}")
+
+    if refresh_only or count == 0:
+        return 0
+
+    # Launch Jupyter Lab
+    print(f"\nStarting Jupyter Lab in {lab_dir} ...")
+    subprocess.run(["jupyter", "lab"], cwd=lab_dir)
+    return 0
+
+
 def _cmd_nb_exec(args: argparse.Namespace) -> int:
     from pipeio.notebook.lifecycle import nb_exec
 
@@ -817,6 +849,12 @@ def main(argv: list[str] | None = None) -> int:
     nb_sub.add_parser("publish", help="Publish notebooks to docs")
     nb_sub.add_parser("status", help="Show notebook sync status")
 
+    nb_lab_p = nb_sub.add_parser("lab", help="Build symlink manifest and launch Jupyter Lab")
+    nb_lab_p.add_argument("--pipe", help="Filter to a specific pipeline")
+    nb_lab_p.add_argument("--flow", help="Filter to a specific flow")
+    nb_lab_p.add_argument("--no-sync", action="store_true", help="Skip py→ipynb sync before linking")
+    nb_lab_p.add_argument("--refresh", action="store_true", help="Refresh manifest only (no Jupyter launch)")
+
     # pipeio registry {scan,validate}
     reg_p = sub.add_parser("registry", help="Pipeline registry")
     reg_p.add_argument("--root", dest="root", help="Project root")
@@ -901,6 +939,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_nb_exec(args)
         if args.nb_command == "publish":
             return _cmd_nb_publish(args)
+        if args.nb_command == "lab":
+            return _cmd_nb_lab(args)
         nb_p.print_help()
         return 0
 

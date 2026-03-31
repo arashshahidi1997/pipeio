@@ -406,6 +406,132 @@ def nb_diff(py_path: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Lab manifest (symlink workspace for Jupyter Lab)
+# ---------------------------------------------------------------------------
+
+def nb_lab(
+    root: Path,
+    *,
+    pipe: str | None = None,
+    flow: str | None = None,
+    lab_dir: Path | None = None,
+    sync: bool = True,
+    python_bin: str | None = None,
+) -> dict[str, Any]:
+    """Build a symlink manifest of active .ipynb notebooks and return its state.
+
+    Creates ``<lab_dir>/<pipe>/<flow>/<name>.ipynb`` symlinks pointing back to
+    the real notebook files.  Stale symlinks (pointing to removed notebooks)
+    are cleaned up automatically.
+
+    Parameters
+    ----------
+    root : Path
+        Project root.
+    pipe : str | None
+        Filter to a specific pipeline.
+    flow : str | None
+        Filter to a specific flow.
+    lab_dir : Path | None
+        Manifest directory (default: ``<root>/.projio/pipeio/lab``).
+    sync : bool
+        If True (default), sync py→ipynb before linking so notebooks are fresh.
+    python_bin : str | None
+        Python binary where jupytext is installed (for sync).
+    """
+    if lab_dir is None:
+        lab_dir = root / ".projio" / "pipeio" / "lab"
+    lab_dir.mkdir(parents=True, exist_ok=True)
+
+    from pipeio.notebook.config import NotebookConfig
+
+    linked: list[dict[str, str]] = []
+    synced: list[str] = []
+
+    for flow_root, cfg in find_notebook_configs(root):
+        # Derive pipe/flow from path: <root>/pipe/<pipe>/<flow>/
+        try:
+            rel = flow_root.relative_to(root)
+            parts = rel.parts  # e.g. ("pipe", "s01-preproc", "flow1")
+        except ValueError:
+            continue
+
+        # Registry layout: pipe/<pipe_name>/<flow_name>/ or pipelines/<pipe>/<flow>/
+        entry_pipe = parts[1] if len(parts) >= 3 else parts[0] if parts else "unknown"
+        entry_flow = parts[2] if len(parts) >= 3 else parts[1] if len(parts) >= 2 else "unknown"
+
+        if pipe and entry_pipe != pipe:
+            continue
+        if flow and entry_flow != flow:
+            continue
+
+        for entry in cfg.entries:
+            # Only link active notebooks with ipynb pairing
+            if entry.status not in ("active", "draft") or not entry.pair_ipynb:
+                continue
+
+            py_path = flow_root / entry.path
+            ipynb_path = py_path.with_suffix(".ipynb")
+
+            # Optionally sync first
+            if sync and py_path.exists():
+                result = nb_sync_one(
+                    py_path, direction="py2nb", formats=["ipynb"],
+                    force=False, python_bin=python_bin,
+                )
+                if result.get("synced"):
+                    synced.append(str(ipynb_path))
+
+            if not ipynb_path.exists():
+                continue
+
+            # Create symlink: lab_dir/<pipe>/<flow>/<name>.ipynb
+            link_dir = lab_dir / entry_pipe / entry_flow
+            link_dir.mkdir(parents=True, exist_ok=True)
+            link_path = link_dir / ipynb_path.name
+
+            # Compute relative target from link location to real file
+            target = Path.cwd() if not ipynb_path.is_absolute() else ipynb_path
+            target = ipynb_path
+            try:
+                rel_target = Path(*(['..'] * len(link_path.parent.relative_to(lab_dir).parts)),
+                                  ipynb_path.relative_to(root))
+            except ValueError:
+                rel_target = ipynb_path  # absolute fallback
+
+            if link_path.is_symlink():
+                link_path.unlink()
+            link_path.symlink_to(rel_target)
+
+            linked.append({
+                "name": py_path.stem,
+                "pipe": entry_pipe,
+                "flow": entry_flow,
+                "link": str(link_path.relative_to(lab_dir)),
+                "target": str(ipynb_path),
+            })
+
+    # Clean stale symlinks
+    stale: list[str] = []
+    for link in lab_dir.rglob("*.ipynb"):
+        if link.is_symlink() and not link.resolve().exists():
+            stale.append(str(link.relative_to(lab_dir)))
+            link.unlink()
+    # Remove empty directories
+    for d in sorted(lab_dir.rglob("*"), reverse=True):
+        if d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+
+    return {
+        "lab_dir": str(lab_dir),
+        "linked": linked,
+        "synced": synced,
+        "stale_cleaned": stale,
+        "count": len(linked),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
