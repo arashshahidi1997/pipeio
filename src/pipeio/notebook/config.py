@@ -16,6 +16,7 @@ class NotebookEntry(BaseModel):
     description: str = ""
     status: str = "active"
     kernel: str = ""
+    mod: str = ""
     pair_ipynb: bool = False
     pair_myst: bool = False
     publish_myst: bool = False

@@ -537,6 +537,136 @@ def nb_diff(py_path: Path) -> dict[str, Any]:
 # Lab manifest (symlink workspace for Jupyter Lab)
 # ---------------------------------------------------------------------------
 
+def nb_read(py_path: Path) -> dict[str, Any]:
+    """Read a percent-format notebook and return content + metadata.
+
+    Returns the ``.py`` source content alongside structured metadata
+    (sections, imports, sync state) in a single call.
+    """
+    if not py_path.exists():
+        return {"error": f"Notebook not found: {py_path}"}
+
+    content = py_path.read_text(encoding="utf-8")
+    result: dict[str, Any] = {
+        "path": str(py_path),
+        "name": py_path.stem,
+        "content": content,
+        "lines": content.count("\n") + 1,
+    }
+
+    # Add sync state
+    result["sync"] = nb_diff(py_path)
+
+    # Add structural analysis if available
+    try:
+        from pipeio.notebook.analyze import analyze_notebook
+        analysis = analyze_notebook(py_path)
+        result["sections"] = analysis.get("sections", [])
+        result["imports"] = analysis.get("imports", [])
+        result["run_card"] = analysis.get("run_card", [])
+        result["cogpy_functions"] = analysis.get("cogpy_functions", [])
+        result["pending_modules"] = analysis.get("pending_modules", [])
+    except Exception:
+        pass
+
+    return result
+
+
+def nb_audit(root: Path) -> list[dict[str, Any]]:
+    """Audit all notebooks: staleness, config completeness, mod coverage.
+
+    Returns a list of per-notebook audit records with quality flags.
+    """
+    from pipeio.notebook.config import NotebookConfig
+
+    records: list[dict[str, Any]] = []
+
+    for flow_root, cfg in find_notebook_configs(root):
+        # Collect mod names from the flow (if rule_list is available)
+        flow_mods: set[str] = set()
+        try:
+            from pipeio.rules import parse_rules
+            smk = flow_root / "Snakefile"
+            if smk.exists():
+                for rule in parse_rules(smk):
+                    if rule.get("mod"):
+                        flow_mods.add(rule["mod"])
+        except Exception:
+            pass
+
+        notebook_mods: set[str] = set()
+
+        for entry in cfg.entries:
+            py_path = flow_root / entry.path
+            kernel = cfg.resolve_kernel(entry)
+            record: dict[str, Any] = {
+                "name": py_path.stem,
+                "flow_root": str(flow_root),
+                "status": entry.status,
+                "kind": entry.kind,
+                "mod": entry.mod,
+                "kernel": kernel,
+                "issues": [],
+            }
+
+            if entry.mod:
+                notebook_mods.add(entry.mod)
+
+            # Check file exists
+            if not py_path.exists():
+                record["issues"].append("py_missing")
+            else:
+                record["lines"] = py_path.read_text(encoding="utf-8").count("\n") + 1
+
+            # Check pairing config
+            if not entry.pair_ipynb:
+                record["issues"].append("pair_ipynb_disabled")
+
+            # Check sync state
+            if py_path.exists():
+                diff = nb_diff(py_path)
+                record["sync_status"] = diff.get("status", "unknown")
+                if diff.get("status") == "ipynb_newer":
+                    record["issues"].append("ipynb_has_unsynced_edits")
+                elif diff.get("status") == "py_newer":
+                    record["issues"].append("ipynb_stale")
+                elif diff.get("status") == "unpaired":
+                    record["issues"].append("ipynb_missing")
+                record["executed"] = diff.get("executed", False)
+
+            # Check metadata completeness
+            if not entry.description:
+                record["issues"].append("no_description")
+            if not entry.kind:
+                record["issues"].append("no_kind")
+            if not kernel:
+                record["issues"].append("no_kernel")
+            if not entry.mod:
+                record["issues"].append("no_mod")
+
+            # Status quality
+            if entry.status == "draft" and py_path.exists():
+                lines = py_path.read_text(encoding="utf-8").count("\n")
+                if lines > 50:
+                    record["issues"].append("draft_but_substantial")
+
+            record["issue_count"] = len(record["issues"])
+            records.append(record)
+
+        # Check for mods without notebooks
+        uncovered = flow_mods - notebook_mods
+        if uncovered:
+            records.append({
+                "name": "__flow_coverage__",
+                "flow_root": str(flow_root),
+                "uncovered_mods": sorted(uncovered),
+                "issues": [f"mod_without_notebook:{m}" for m in sorted(uncovered)],
+                "issue_count": len(uncovered),
+            })
+
+    return records
+
+
 def nb_lab(
     root: Path,
     *,

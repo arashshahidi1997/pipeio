@@ -1094,6 +1094,113 @@ def mcp_nb_scan(
     }
 
 
+def mcp_nb_read(
+    root: Path,
+    pipe: str,
+    flow: str,
+    name: str,
+) -> dict[str, Any]:
+    """Read a notebook's .py content and return it with metadata.
+
+    Combines file content, sync state, structural analysis, and config
+    metadata (status, kernel, mod) in a single call.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name.
+        name: Notebook basename (without extension).
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    py_path = flow_dir / "notebooks" / f"{name}.py"
+
+    from pipeio.notebook.lifecycle import nb_read
+
+    result = nb_read(py_path)
+
+    # Enrich with config metadata from notebook.yml
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            from pipeio.notebook.config import NotebookConfig
+            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+            for nb in nb_cfg.entries:
+                if Path(nb.path).stem == name:
+                    result["status"] = nb.status
+                    result["kind"] = nb.kind
+                    result["mod"] = nb.mod
+                    result["kernel"] = nb_cfg.resolve_kernel(nb)
+                    result["description"] = nb.description
+                    break
+        except Exception:
+            pass
+
+    # Relativize paths
+    for key in ("path",):
+        if key in result:
+            try:
+                result[key] = str(Path(result[key]).relative_to(root))
+            except ValueError:
+                pass
+    if "sync" in result:
+        for k in ("py_path", "ipynb_path"):
+            if k in result["sync"]:
+                try:
+                    result["sync"][k] = str(Path(result["sync"][k]).relative_to(root))
+                except ValueError:
+                    pass
+
+    return result
+
+
+def mcp_nb_audit(root: Path) -> dict[str, Any]:
+    """Audit all notebooks: staleness, config completeness, mod coverage.
+
+    Returns a holistic quality report with per-notebook issues and
+    flow-level mod coverage gaps.
+
+    Args:
+        root: Project root.
+    """
+    from pipeio.notebook.lifecycle import nb_audit
+
+    records = nb_audit(root)
+
+    # Relativize flow_root
+    for rec in records:
+        if "flow_root" in rec:
+            try:
+                rec["flow_root"] = str(Path(rec["flow_root"]).relative_to(root))
+            except ValueError:
+                pass
+
+    total_issues = sum(r.get("issue_count", 0) for r in records)
+    notebooks = [r for r in records if r.get("name") != "__flow_coverage__"]
+    coverage = [r for r in records if r.get("name") == "__flow_coverage__"]
+
+    return {
+        "total_notebooks": len(notebooks),
+        "total_issues": total_issues,
+        "notebooks": notebooks,
+        "coverage_gaps": coverage,
+    }
+
+
 def mcp_nb_publish(
     root: Path,
     pipe: str,
