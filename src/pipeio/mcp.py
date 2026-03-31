@@ -91,6 +91,45 @@ def mcp_flow_status(root: Path, pipe: str, flow: str) -> dict[str, Any]:
     return result
 
 
+def mcp_flow_deregister(
+    root: Path,
+    pipe: str,
+    flow: str,
+) -> dict[str, Any]:
+    """Remove a flow from the pipeline registry.
+
+    Only removes the registry entry — does NOT delete code, config, docs,
+    or notebook files from the filesystem.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name.
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        removed = registry.remove(pipe, flow)
+    except KeyError as exc:
+        return {"error": str(exc)}
+
+    registry.to_yaml(registry_path)
+
+    return {
+        "deregistered": True,
+        "pipe": removed.pipe,
+        "flow": removed.name,
+        "code_path": removed.code_path,
+        "mods": list(removed.mods.keys()) if removed.mods else [],
+        "note": "Registry entry removed. Code and docs are untouched on disk.",
+    }
+
+
 def mcp_nb_status(
     root: Path,
     pipe: str | None = None,

@@ -797,6 +797,31 @@ def _cmd_registry_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_registry_deregister(args: argparse.Namespace) -> int:
+    from pipeio.registry import PipelineRegistry
+
+    root = Path(args.root) if args.root else _find_root()
+    reg_path = _find_registry(root)
+    if reg_path is None or not reg_path.exists():
+        print("No registry found.", file=sys.stderr)
+        return 1
+
+    registry = PipelineRegistry.from_yaml(reg_path)
+    try:
+        removed = registry.remove(args.pipe, args.flow)
+    except KeyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    registry.to_yaml(reg_path)
+    print(f"Deregistered: pipe={removed.pipe} flow={removed.name}")
+    print(f"  code_path: {removed.code_path}")
+    if removed.mods:
+        print(f"  mods: {', '.join(removed.mods.keys())}")
+    print("  Note: files on disk are untouched.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pipeio",
@@ -901,6 +926,10 @@ def main(argv: list[str] | None = None) -> int:
     reg_val = reg_sub.add_parser("validate", help="Validate registry consistency")
     reg_val.add_argument("--registry", help="Registry YAML path")
 
+    reg_dereg = reg_sub.add_parser("deregister", help="Remove a flow from the registry")
+    reg_dereg.add_argument("pipe", help="Pipeline name")
+    reg_dereg.add_argument("flow", help="Flow name")
+
     # pipeio docs {collect,nav}
     docs_p = sub.add_parser("docs", help="Pipeline documentation")
     docs_p.add_argument("--root", dest="root", help="Project root")
@@ -957,6 +986,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_registry_scan(args)
         if args.registry_command == "validate":
             return _cmd_registry_validate(args)
+        if args.registry_command == "deregister":
+            return _cmd_registry_deregister(args)
         reg_p.print_help()
         return 0
 

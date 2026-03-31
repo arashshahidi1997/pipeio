@@ -89,6 +89,19 @@ class PipelineRegistry(BaseModel):
             entries = [f for f in entries if f.pipe == pipe]
         return entries
 
+    def remove(self, pipe: str, flow: str) -> FlowEntry:
+        """Remove a flow from the registry and return the removed entry."""
+        key = f"{pipe}/{flow}"
+        if key not in self.flows:
+            # Try matching by pipe+name fields
+            for k, entry in self.flows.items():
+                if entry.pipe == pipe and entry.name == flow:
+                    key = k
+                    break
+            else:
+                raise KeyError(f"Flow not found: pipe={pipe!r} flow={flow!r}")
+        return self.flows.pop(key)
+
     def get(self, pipe: str, flow: str | None = None) -> FlowEntry:
         """Resolve a (pipe, flow) pair to a FlowEntry.
 
