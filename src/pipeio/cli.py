@@ -67,16 +67,55 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_flow_list(args: argparse.Namespace) -> int:
+def _load_registry(root: Path):
+    """Load the pipeline registry, returning (registry, root) or exiting with error."""
     from pipeio.registry import PipelineRegistry
 
-    root = Path(args.root) if args.root else _find_root()
     reg_path = _find_registry(root)
     if reg_path is None:
         print("No registry found. Run 'pipeio init' first.", file=sys.stderr)
+        return None
+    return PipelineRegistry.from_yaml(reg_path)
+
+
+def _resolve_flow(root: Path, flow_name: str):
+    """Look up a flow by name or pipe/flow. Returns (entry, root) or None."""
+    registry = _load_registry(root)
+    if registry is None:
+        return None
+
+    # Try exact name match first, then pipe/flow
+    for f in registry.list_flows():
+        if f.name == flow_name:
+            return f
+    for f in registry.list_flows():
+        if f"{f.pipe}/{f.name}" == flow_name:
+            return f
+
+    print(f"Unknown flow: {flow_name}", file=sys.stderr)
+    return None
+
+
+def _flow_code_dir(root: Path, entry) -> Path:
+    """Return the absolute code directory for a flow entry."""
+    code_path = Path(entry.code_path)
+    return code_path if code_path.is_absolute() else root / code_path
+
+
+def _flow_config_path(root: Path, entry) -> Path | None:
+    """Return the absolute config path for a flow entry, or None."""
+    if not entry.config_path:
+        return None
+    cfg_path = Path(entry.config_path)
+    return cfg_path if cfg_path.is_absolute() else root / cfg_path
+
+
+def _cmd_flow_list(args: argparse.Namespace) -> int:
+    root = Path(args.root) if args.root else _find_root()
+    registry = _load_registry(root)
+    if registry is None:
         return 1
 
-    registry = PipelineRegistry.from_yaml(reg_path)
     pipe = getattr(args, "pipe", None)
     flows = registry.list_flows(pipe=pipe)
     if not flows:
@@ -92,14 +131,11 @@ def _cmd_flow_list(args: argparse.Namespace) -> int:
 
 def _cmd_flow_ids(args: argparse.Namespace) -> int:
     """Print flow names for shell completion."""
-    from pipeio.registry import PipelineRegistry
-
     root = Path(args.root) if args.root else _find_root()
-    reg_path = _find_registry(root)
-    if reg_path is None:
+    registry = _load_registry(root)
+    if registry is None:
         return 1
 
-    registry = PipelineRegistry.from_yaml(reg_path)
     names = sorted({f.name for f in registry.list_flows()})
     print(" ".join(names))
     return 0
@@ -107,97 +143,39 @@ def _cmd_flow_ids(args: argparse.Namespace) -> int:
 
 def _cmd_flow_path(args: argparse.Namespace) -> int:
     """Print absolute code_path for a flow (for shell cd)."""
-    from pipeio.registry import PipelineRegistry
-
     root = Path(args.root) if args.root else _find_root()
-    reg_path = _find_registry(root)
-    if reg_path is None:
-        print("No registry found.", file=sys.stderr)
-        return 1
-
-    registry = PipelineRegistry.from_yaml(reg_path)
-    # Try exact name match first, then pipe/flow
-    entry = None
-    for f in registry.list_flows():
-        if f.name == args.flow:
-            entry = f
-            break
+    entry = _resolve_flow(root, args.flow)
     if entry is None:
-        # Try as pipe/flow
-        for f in registry.list_flows():
-            if f"{f.pipe}/{f.name}" == args.flow:
-                entry = f
-                break
-    if entry is None:
-        print(f"Unknown flow: {args.flow}", file=sys.stderr)
         return 1
-
-    code_path = Path(entry.code_path)
-    if not code_path.is_absolute():
-        code_path = root / code_path
-    print(code_path)
+    print(_flow_code_dir(root, entry))
     return 0
 
 
 def _cmd_flow_config(args: argparse.Namespace) -> int:
     """Print absolute config_path for a flow."""
-    from pipeio.registry import PipelineRegistry
-
     root = Path(args.root) if args.root else _find_root()
-    reg_path = _find_registry(root)
-    if reg_path is None:
-        print("No registry found.", file=sys.stderr)
-        return 1
-
-    registry = PipelineRegistry.from_yaml(reg_path)
-    entry = None
-    for f in registry.list_flows():
-        if f.name == args.flow:
-            entry = f
-            break
+    entry = _resolve_flow(root, args.flow)
     if entry is None:
-        print(f"Unknown flow: {args.flow}", file=sys.stderr)
         return 1
-
-    if not entry.config_path:
+    cfg_path = _flow_config_path(root, entry)
+    if cfg_path is None:
         print(f"No config_path for {args.flow}", file=sys.stderr)
         return 1
-
-    cfg_path = Path(entry.config_path)
-    if not cfg_path.is_absolute():
-        cfg_path = root / cfg_path
     print(cfg_path)
     return 0
 
 
 def _cmd_flow_deriv(args: argparse.Namespace) -> int:
     """Print absolute derivative directory path for a flow."""
-    from pipeio.registry import PipelineRegistry
-
     root = Path(args.root) if args.root else _find_root()
-    reg_path = _find_registry(root)
-    if reg_path is None:
-        print("No registry found.", file=sys.stderr)
-        return 1
-
-    registry = PipelineRegistry.from_yaml(reg_path)
-    entry = None
-    for f in registry.list_flows():
-        if f.name == args.flow:
-            entry = f
-            break
+    entry = _resolve_flow(root, args.flow)
     if entry is None:
-        print(f"Unknown flow: {args.flow}", file=sys.stderr)
         return 1
 
-    if not entry.config_path:
+    cfg_path = _flow_config_path(root, entry)
+    if cfg_path is None:
         print(f"No config_path for {args.flow}", file=sys.stderr)
         return 1
-
-    # Read config to get output_dir
-    cfg_path = Path(entry.config_path)
-    if not cfg_path.is_absolute():
-        cfg_path = root / cfg_path
     if not cfg_path.exists():
         print(f"Config not found: {cfg_path}", file=sys.stderr)
         return 1
@@ -219,36 +197,18 @@ def _cmd_flow_smk(args: argparse.Namespace) -> int:
     """Run snakemake in the context of a flow (resolves --snakefile, --directory)."""
     import subprocess
 
-    from pipeio.registry import PipelineRegistry
-
     root = Path(args.root) if args.root else _find_root()
-    reg_path = _find_registry(root)
-    if reg_path is None:
-        print("No registry found.", file=sys.stderr)
-        return 1
-
-    registry = PipelineRegistry.from_yaml(reg_path)
-    entry = None
-    for f in registry.list_flows():
-        if f.name == args.flow:
-            entry = f
-            break
+    entry = _resolve_flow(root, args.flow)
     if entry is None:
-        print(f"Unknown flow: {args.flow}", file=sys.stderr)
         return 1
 
-    flow_dir = Path(entry.code_path)
-    if not flow_dir.is_absolute():
-        flow_dir = root / flow_dir
-
+    flow_dir = _flow_code_dir(root, entry)
     snakefile = flow_dir / "Snakefile"
     if not snakefile.exists():
         print(f"No Snakefile in {flow_dir}", file=sys.stderr)
         return 1
 
-    # Find snakemake: check PATH, then try known conda envs
     smk_cmd = _resolve_snakemake()
-
     cmd = [
         *smk_cmd,
         "--snakefile", str(snakefile),
@@ -258,6 +218,212 @@ def _cmd_flow_smk(args: argparse.Namespace) -> int:
 
     result = subprocess.run(cmd, cwd=str(root))
     return result.returncode
+
+
+def _cmd_flow_status(args: argparse.Namespace) -> int:
+    """Show flow status: config, outputs, completion summary."""
+    root = Path(args.root) if args.root else _find_root()
+    entry = _resolve_flow(root, args.flow)
+    if entry is None:
+        return 1
+
+    flow_dir = _flow_code_dir(root, entry)
+    cfg_path = _flow_config_path(root, entry)
+
+    print(f"  flow:    {entry.pipe}/{entry.name}")
+    print(f"  code:    {flow_dir}")
+    print(f"  config:  {cfg_path or '(none)'}")
+
+    snakefile = flow_dir / "Snakefile"
+    print(f"  Snakefile: {'yes' if snakefile.exists() else 'NO'}")
+
+    if entry.mods:
+        print(f"  mods:    {', '.join(entry.mods.keys())}")
+
+    # Show output groups and file counts if config exists
+    if cfg_path and cfg_path.exists():
+        config = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        output_dir = config.get("output_dir", "")
+        registry_data = config.get("registry") or {}
+
+        if output_dir:
+            output_base = Path(output_dir)
+            if not output_base.is_absolute():
+                output_base = root / output_base
+            print(f"  output:  {output_base}")
+
+            for group_name, group in registry_data.items():
+                if not isinstance(group, dict):
+                    continue
+                group_root = (group.get("bids") or {}).get("root", group_name)
+                group_dir = output_base / group_root
+                members = group.get("members") or {}
+                if group_dir.exists():
+                    total = sum(
+                        len(list(group_dir.glob(f"**/*{m.get('suffix', '')}{m.get('extension', '')}")))
+                        for m in members.values()
+                        if isinstance(m, dict)
+                    )
+                    print(f"    {group_name}: {len(members)} members, {total} files")
+                else:
+                    print(f"    {group_name}: {len(members)} members, (no output dir)")
+    return 0
+
+
+def _cmd_flow_targets(args: argparse.Namespace) -> int:
+    """Resolve output paths for a flow's registry entries."""
+    root = Path(args.root) if args.root else _find_root()
+    entry = _resolve_flow(root, args.flow)
+    if entry is None:
+        return 1
+
+    cfg_path = _flow_config_path(root, entry)
+    if cfg_path is None or not cfg_path.exists():
+        print(f"No config for {args.flow}", file=sys.stderr)
+        return 1
+
+    from pipeio.config import FlowConfig
+    from pipeio.resolver import PipelineContext
+
+    flow_config = FlowConfig.from_yaml(cfg_path)
+    ctx = PipelineContext.from_config(flow_config, root)
+
+    group_filter = getattr(args, "group", None)
+    member_filter = getattr(args, "member", None)
+
+    # Parse --entity key=value pairs
+    entities = {}
+    for kv in getattr(args, "entity", []) or []:
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            entities[k] = v
+
+    groups = [group_filter] if group_filter else ctx.groups()
+
+    for group_name in groups:
+        members = [member_filter] if member_filter else ctx.products(group_name)
+        for member_name in members:
+            if entities:
+                # Resolve or expand
+                if getattr(args, "expand", False):
+                    paths = ctx.expand(group_name, member_name, **entities)
+                    for p in paths:
+                        exists = "  [exists]" if p.exists() else ""
+                        print(f"  {group_name}/{member_name}: {p}{exists}")
+                    if not paths:
+                        print(f"  {group_name}/{member_name}: (no matches)")
+                else:
+                    path = ctx.path(group_name, member_name, **entities)
+                    exists = "  [exists]" if path.exists() else ""
+                    print(f"  {group_name}/{member_name}: {path}{exists}")
+            else:
+                # Show pattern
+                pattern = ctx.pattern(group_name, member_name)
+                print(f"  {group_name}/{member_name}: {pattern}")
+    return 0
+
+
+def _cmd_flow_run(args: argparse.Namespace) -> int:
+    """Launch snakemake via screen with optional wildcard filtering."""
+    import json
+    import shutil
+
+    root = Path(args.root) if args.root else _find_root()
+    entry = _resolve_flow(root, args.flow)
+    if entry is None:
+        return 1
+
+    if not shutil.which("screen"):
+        print("screen is not installed. Install with: apt install screen", file=sys.stderr)
+        return 1
+
+    # Parse --filter key=value pairs into wildcards
+    wildcards = {}
+    for kv in getattr(args, "filter", []) or []:
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            wildcards[k] = v
+
+    from pipeio.mcp import mcp_run
+
+    result = mcp_run(
+        root,
+        pipe=entry.pipe,
+        flow=entry.name,
+        targets=getattr(args, "targets", None) or None,
+        cores=getattr(args, "cores", 1),
+        dryrun=getattr(args, "dryrun", False),
+        snakemake_cmd=_resolve_snakemake(),
+        wildcards=wildcards or None,
+    )
+
+    if "error" in result:
+        print(f"Error: {result['error']}", file=sys.stderr)
+        return 1
+
+    print(f"  run_id:  {result['run_id']}")
+    print(f"  screen:  {result['screen']}")
+    print(f"  log:     {result['log_path']}")
+    if result.get("dryrun"):
+        print("  (dry run)")
+    return 0
+
+
+def _cmd_flow_log(args: argparse.Namespace) -> int:
+    """Tail the latest run log for a flow."""
+    import json
+
+    root = Path(args.root) if args.root else _find_root()
+    entry = _resolve_flow(root, args.flow)
+    if entry is None:
+        return 1
+
+    from pipeio.mcp import _load_runs
+
+    runs = _load_runs(root)
+    # Filter to this flow, most recent first
+    flow_runs = [
+        r for r in runs
+        if r.get("pipe") == entry.pipe and r.get("flow") == entry.name
+    ]
+    if not flow_runs:
+        print(f"No runs recorded for {entry.pipe}/{entry.name}", file=sys.stderr)
+        return 1
+
+    latest = flow_runs[-1]
+    log_path = root / latest.get("log_path", "")
+
+    if not log_path.exists():
+        print(f"Log not found: {log_path}", file=sys.stderr)
+        return 1
+
+    lines = int(getattr(args, "lines", 40) or 40)
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    tail = text.splitlines()[-lines:]
+
+    print(f"  run_id: {latest['id']}  status: {latest.get('status', '?')}  log: {log_path}")
+    print("  " + "-" * 60)
+    for line in tail:
+        print(line)
+    return 0
+
+
+def _cmd_flow_mods(args: argparse.Namespace) -> int:
+    """List mods for a flow with their rules."""
+    root = Path(args.root) if args.root else _find_root()
+    entry = _resolve_flow(root, args.flow)
+    if entry is None:
+        return 1
+
+    if not entry.mods:
+        print(f"No mods defined for {entry.pipe}/{entry.name}")
+        return 0
+
+    for mod_name, mod in entry.mods.items():
+        rules = ", ".join(mod.rules) if mod.rules else "(none)"
+        desc = f"  # {mod.description}" if getattr(mod, "description", None) else ""
+        print(f"  {mod_name}: {rules}{desc}")
+    return 0
 
 
 def _resolve_snakemake() -> list[str]:
@@ -571,6 +737,30 @@ def main(argv: list[str] | None = None) -> int:
     flow_smk.add_argument("flow", help="Flow name")
     flow_smk.add_argument("smk_args", nargs=argparse.REMAINDER, help="Snakemake arguments")
 
+    flow_status = flow_sub.add_parser("status", help="Show flow status and output summary")
+    flow_status.add_argument("flow", help="Flow name")
+
+    flow_targets = flow_sub.add_parser("targets", help="Resolve output paths for a flow")
+    flow_targets.add_argument("flow", help="Flow name")
+    flow_targets.add_argument("--group", "-g", help="Registry group name")
+    flow_targets.add_argument("--member", "-m", help="Registry member name")
+    flow_targets.add_argument("--entity", "-e", action="append", help="Entity filter (key=value, repeatable)")
+    flow_targets.add_argument("--expand", "-x", action="store_true", help="Glob for all matching paths")
+
+    flow_run = flow_sub.add_parser("run", help="Launch snakemake in a screen session")
+    flow_run.add_argument("flow", help="Flow name")
+    flow_run.add_argument("targets", nargs="*", help="Snakemake target rules")
+    flow_run.add_argument("--cores", "-c", type=int, default=1, help="Number of cores")
+    flow_run.add_argument("--dryrun", "-n", action="store_true", help="Dry run")
+    flow_run.add_argument("--filter", "-f", action="append", help="Wildcard filter (key=value, repeatable)")
+
+    flow_log = flow_sub.add_parser("log", help="Tail the latest run log for a flow")
+    flow_log.add_argument("flow", help="Flow name")
+    flow_log.add_argument("--lines", "-n", type=int, default=40, help="Number of lines to show")
+
+    flow_mods_p = flow_sub.add_parser("mods", help="List mods for a flow")
+    flow_mods_p.add_argument("flow", help="Flow name")
+
     # pipeio nb {pair,sync,exec,publish,status}
     nb_p = sub.add_parser("nb", help="Notebook lifecycle")
     nb_p.add_argument("--root", dest="root", help="Project root")
@@ -634,6 +824,16 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_flow_deriv(args)
         if args.flow_command == "smk":
             return _cmd_flow_smk(args)
+        if args.flow_command == "status":
+            return _cmd_flow_status(args)
+        if args.flow_command == "targets":
+            return _cmd_flow_targets(args)
+        if args.flow_command == "run":
+            return _cmd_flow_run(args)
+        if args.flow_command == "log":
+            return _cmd_flow_log(args)
+        if args.flow_command == "mods":
+            return _cmd_flow_mods(args)
         flow_p.print_help()
         return 0
 

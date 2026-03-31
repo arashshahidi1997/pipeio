@@ -1,5 +1,23 @@
 # Resolve paths
 
+## From the CLI
+
+```bash
+pipeio flow targets ieeg                                    # show path patterns
+pipeio flow targets ieeg -g badlabel -m npy -e sub=01       # resolve concrete path
+pipeio flow targets ieeg -g badlabel -x -e sub=01           # expand (glob) on disk
+```
+
+## Via MCP
+
+```
+pipeio_target_paths(pipe="preprocess", flow="ieeg")                              # list groups
+pipeio_target_paths(pipe="preprocess", flow="ieeg", group="badlabel", member="npy",
+                    entities={"sub": "01", "ses": "04"})                          # resolve
+pipeio_target_paths(pipe="preprocess", flow="ieeg", group="badlabel", expand=True,
+                    entities={"sub": "01"})                                       # expand
+```
+
 ## From a config file
 
 ```python

@@ -34,10 +34,18 @@ If `.projio/config.yml` exists, adds a `pipeio:` section.
 Flow management.
 
 ```
-pipeio flow list [--pipe PIPE]                    # list all flows
-pipeio flow new <pipe> <flow> [--template PATH]   # scaffold a new flow
-pipeio flow status <pipe> <flow>                  # show flow status
-pipeio flow write-registry <pipe> <flow>          # generate output registry file
+pipeio flow list [--pipe PIPE]                          # list all flows
+pipeio flow new <pipe> <flow>                           # scaffold a new flow
+pipeio flow path <flow>                                 # print code directory path
+pipeio flow config <flow>                               # print config path
+pipeio flow deriv <flow>                                # print derivative directory path
+pipeio flow status <flow>                               # show flow status + output summary
+pipeio flow targets <flow> [-g GRP] [-m MEM] [-e k=v] [-x]  # resolve output paths
+pipeio flow run <flow> [targets] [-c N] [-n] [-f k=v]  # launch via screen + wildcards
+pipeio flow log <flow> [-n LINES]                       # tail latest run log
+pipeio flow mods <flow>                                 # list mods and their rules
+pipeio flow smk <flow> [snakemake args...]              # run snakemake in flow context
+pipeio flow ids                                         # print flow names (completion)
 ```
 
 ### `pipeio nb`

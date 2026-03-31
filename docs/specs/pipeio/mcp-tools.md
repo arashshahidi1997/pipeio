@@ -15,7 +15,8 @@ pipeio exposes tools through projio's MCP server for AI agent access to pipeline
 | Config authoring | 2 | **Keep** (config_read, config_patch) |
 | Contracts & tracking | 3 | **Keep** (contracts_validate, cross_flow, completion) |
 | Documentation | 4 | **Keep** |
-| Adapters | 4 | **Thin-to-adapter** (dag, completion, log_parse, config_init) |
+| Path resolution | 1 | **New** (target_paths) |
+| Adapters | 3 | **Thin-to-adapter** (dag_export, log_parse, config_init) |
 | Execution | 4 | **Deprecated** — migrate to `datalad run` (run, run_status, run_dashboard, run_kill) |
 
 ## Tool Registration
@@ -342,7 +343,7 @@ Read and parse a flow's config.yml with YAML anchor resolution and bids() signat
 pipeio_config_read(pipe: str, flow: str = "") → dict
 ```
 
-**Returns:** `pybids_inputs`, `registry` (resolved), `member_sets`, `params`, `bids_signatures`, `has_anchors`.
+**Returns:** `pybids_inputs`, `registry` (resolved), `member_sets`, `params`, `bids_signatures`, `resolved_patterns`, `has_anchors`.
 
 #### `pipeio_config_patch`
 
@@ -355,6 +356,39 @@ pipeio_config_patch(
     params_entry: dict = {},    # {section: {key: value}}
     apply: bool = False,
 ) → dict
+```
+
+### Path Resolution
+
+#### `pipeio_target_paths`
+
+Resolve output paths for a flow's registry entries via `PipelineContext`.
+
+```
+pipeio_target_paths(
+    pipe: str, flow: str = "",
+    group: str = "", member: str = "",
+    entities: dict = None,  # e.g. {"sub": "01", "ses": "04"}
+    expand: bool = False,
+) → dict
+```
+
+**Modes:**
+
+- **List** (no group): returns all groups, members, and path pattern templates.
+- **Resolve** (group + member + entities): returns a single concrete path and whether it exists.
+- **Expand** (`expand=True`): globs the filesystem for all matching paths, filtered by entities.
+
+**Returns (resolve mode):**
+```json
+{
+  "pipe": "preprocess", "flow": "ieeg",
+  "mode": "resolve",
+  "group": "badlabel", "member": "npy",
+  "entities": {"sub": "01", "ses": "04"},
+  "path": "/project/derivatives/preprocess/badlabel/sub-01/ses-04/sub-01_ses-04_suffix-npy.npy",
+  "exists": true
+}
 ```
 
 ### Contracts & Tracking
@@ -404,8 +438,14 @@ These tools manage Snakemake execution via screen sessions and a custom `runs.js
 Launch a Snakemake run in a detached screen session.
 
 ```
-pipeio_run(pipe: str, flow: str = "", targets: list[str] = [], dry_run: bool = False, cores: int = 1) → dict
+pipeio_run(
+    pipe: str, flow: str = "", targets: list[str] = [],
+    cores: int = 1, dryrun: bool = False,
+    use_conda: bool = False, wildcards: dict = None,
+) → dict
 ```
+
+Uses `stdbuf -oL` for unbuffered output. `wildcards` maps to snakebids `--filter-{key} {value}` flags for single-session scoping.
 
 #### `pipeio_run_status` *(deprecated)*
 
@@ -480,6 +520,9 @@ For agent instructions (CLAUDE.md / `agent_instructions` tool):
 | Generate rule text | `pipeio_rule_stub(pipe, flow, name)` | Write rule text manually |
 | Insert rule into file | `pipeio_rule_insert(pipe, flow, name)` | Edit Snakefiles manually |
 | Patch an existing rule | `pipeio_rule_update(pipe, flow, name)` | Edit Snakefiles manually |
+| Resolve output paths | `pipeio_target_paths(pipe, flow, group, member, entities)` | Construct BIDS paths manually |
+| Export DAG | `pipeio_dag_export(pipe, flow, graph_type)` | Run snakemake --rulegraph manually |
+| Launch a run | `pipeio_run(pipe, flow, wildcards={"subject": "01"})` | Run snakemake in terminal |
 | Check notebook state | `pipeio_nb_status()` | Compare file timestamps manually |
 | Validate registry | `pipeio_registry_validate()` | Run validation scripts directly |
 
