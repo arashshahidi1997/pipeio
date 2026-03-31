@@ -832,16 +832,12 @@ def nb_lab(
             link_dir.mkdir(parents=True, exist_ok=True)
             link_path = link_dir / ipynb_path.name
 
-            # Compute relative target from link location to real file
-            try:
-                rel_target = Path(*(['..'] * len(link_path.parent.relative_to(lab_dir).parts)),
-                                  ipynb_path.relative_to(root))
-            except ValueError:
-                rel_target = ipynb_path  # absolute fallback
+            # Use absolute path — lab dir is gitignored, no portability concern
+            abs_target = ipynb_path.resolve()
 
-            if link_path.is_symlink():
+            if link_path.is_symlink() or link_path.exists():
                 link_path.unlink()
-            link_path.symlink_to(rel_target)
+            link_path.symlink_to(abs_target)
 
             item: dict[str, str] = {
                 "name": py_path.stem,
