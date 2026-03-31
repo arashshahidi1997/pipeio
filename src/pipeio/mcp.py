@@ -27,6 +27,40 @@ def _find_registry(root: Path) -> Path | None:
 _NO_REGISTRY = {"error": "No pipeline registry found", "hint": "Run pipeio init"}
 
 
+def _resolve_nb_path(flow_dir: Path, name: str) -> Path | None:
+    """Resolve a notebook name to its .py path.
+
+    Checks both flat (``notebooks/{name}.py``) and subdirectory
+    (``notebooks/{name}/{name}.py``) layouts, then falls back to
+    scanning ``notebook.yml`` entries by stem.
+    """
+    # Flat layout
+    flat = flow_dir / "notebooks" / f"{name}.py"
+    if flat.exists():
+        return flat
+
+    # Subdirectory layout
+    subdir = flow_dir / "notebooks" / name / f"{name}.py"
+    if subdir.exists():
+        return subdir
+
+    # Fall back to notebook.yml entry matching
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            from pipeio.notebook.config import NotebookConfig
+            cfg = NotebookConfig.from_yaml(nb_cfg_path)
+            for entry in cfg.entries:
+                if Path(entry.path).stem == name:
+                    candidate = flow_dir / entry.path
+                    if candidate.exists():
+                        return candidate
+        except Exception:
+            pass
+
+    return None
+
+
 def mcp_flow_list(root: Path, pipe: str | None = None) -> dict[str, Any]:
     """List flows, optionally filtered by pipe."""
     from pipeio.registry import PipelineRegistry
@@ -350,8 +384,10 @@ def mcp_nb_update(
     status: str | None = None,
     description: str | None = None,
     kind: str | None = None,
+    mod: str | None = None,
+    kernel: str | None = None,
 ) -> dict[str, Any]:
-    """Update notebook metadata (status, description, kind) in notebook.yml.
+    """Update notebook metadata in notebook.yml.
 
     Args:
         root: Project root.
@@ -361,6 +397,8 @@ def mcp_nb_update(
         status: New status (draft/active/stale/promoted/archived).
         description: New one-line description.
         kind: New kind (investigate/explore/demo/validate).
+        mod: Associated mod name.
+        kernel: Jupyter kernel name.
     """
     import yaml
     from pipeio.notebook.config import NotebookConfig
@@ -412,9 +450,15 @@ def mcp_nb_update(
     if kind is not None:
         target.kind = kind
         updated_fields.append("kind")
+    if mod is not None:
+        target.mod = mod
+        updated_fields.append("mod")
+    if kernel is not None:
+        target.kernel = kernel
+        updated_fields.append("kernel")
 
     if not updated_fields:
-        return {"error": "No fields to update (pass status, description, or kind)"}
+        return {"error": "No fields to update (pass status, description, kind, mod, or kernel)"}
 
     # Write back
     nb_cfg_path.write_text(
@@ -708,7 +752,16 @@ def mcp_registry_scan(root: Path) -> dict[str, Any]:
     if (root / "docs" / "explanation" / "pipelines").exists():
         docs_dir = root / "docs" / "explanation" / "pipelines"
 
-    registry = PipelineRegistry.scan(pipelines_dir, docs_dir=docs_dir)
+    # Load ignore list from registry_ignore.yml
+    ignore: set[str] = set()
+    for cfg_dir in (root / ".projio" / "pipeio", root / ".pipeio"):
+        ignore_path = cfg_dir / "registry_ignore.yml"
+        if ignore_path.exists():
+            raw = yaml.safe_load(ignore_path.read_text(encoding="utf-8")) or {}
+            ignore = set(raw.get("ignore", []))
+            break
+
+    registry = PipelineRegistry.scan(pipelines_dir, docs_dir=docs_dir, ignore=ignore or None)
 
     # Write to registry file
     for candidate in (
@@ -1071,13 +1124,24 @@ def mcp_nb_sync(
     if not flow_dir.is_absolute():
         flow_dir = root / flow_dir
 
-    py_path = flow_dir / "notebooks" / f"{name}.py"
+    py_path = _resolve_nb_path(flow_dir, name)
 
     # For nb2py direction, the .ipynb must exist (not the .py)
-    if direction == "py2nb" and not py_path.exists():
-        return {"error": f"Notebook not found: notebooks/{name}.py"}
-    if direction == "nb2py" and not py_path.with_suffix(".ipynb").exists():
-        return {"error": f"Paired notebook not found: notebooks/{name}.ipynb"}
+    if direction == "py2nb" and py_path is None:
+        return {"error": f"Notebook not found: {name}"}
+    if direction == "nb2py":
+        # For nb2py, the .py may not exist yet — resolve from ipynb
+        if py_path is None:
+            # Try subdirectory layout for the ipynb
+            for candidate in (
+                flow_dir / "notebooks" / f"{name}.py",
+                flow_dir / "notebooks" / name / f"{name}.py",
+            ):
+                if candidate.with_suffix(".ipynb").exists():
+                    py_path = candidate
+                    break
+        if py_path is None or not py_path.with_suffix(".ipynb").exists():
+            return {"error": f"Paired notebook not found: {name}.ipynb"}
 
     try:
         from pipeio.notebook.lifecycle import nb_sync_one
@@ -1123,6 +1187,80 @@ def mcp_nb_sync(
     return result
 
 
+def mcp_nb_sync_flow(
+    root: Path,
+    pipe: str,
+    flow: str,
+    direction: str = "py2nb",
+    force: bool = False,
+    python_bin: str | None = None,
+) -> dict[str, Any]:
+    """Batch-sync all notebooks in a flow.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name.
+        direction: 'py2nb' or 'nb2py'.
+        force: If True, sync even if up-to-date.
+        python_bin: Python binary where jupytext is installed.
+    """
+    from pipeio.notebook.config import NotebookConfig
+    from pipeio.notebook.lifecycle import nb_sync_one
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if not nb_cfg_path.exists():
+        return {"error": f"No notebook.yml found for {pipe}/{flow}"}
+
+    nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+    results: list[dict[str, Any]] = []
+
+    for nb in nb_cfg.entries:
+        name = Path(nb.path).stem
+        py_path = _resolve_nb_path(flow_dir, name)
+        if py_path is None and direction == "py2nb":
+            results.append({"name": name, "skipped": True, "reason": "py not found"})
+            continue
+        if py_path is None:
+            py_path = flow_dir / nb.path  # best guess for nb2py
+
+        kernel = nb_cfg.resolve_kernel(nb)
+        result = nb_sync_one(
+            py_path, direction=direction, force=force,
+            kernel=kernel, python_bin=python_bin,
+        )
+        result["name"] = name
+        results.append(result)
+
+    synced = [r for r in results if r.get("synced")]
+    skipped = [r for r in results if r.get("skipped")]
+
+    return {
+        "pipe": pipe,
+        "flow": flow,
+        "direction": direction,
+        "total": len(results),
+        "synced": len(synced),
+        "skipped": len(skipped),
+        "results": results,
+    }
+
+
 def mcp_nb_diff(
     root: Path,
     pipe: str,
@@ -1157,7 +1295,12 @@ def mcp_nb_diff(
     if not flow_dir.is_absolute():
         flow_dir = root / flow_dir
 
-    py_path = flow_dir / "notebooks" / f"{name}.py"
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        # For diff, try the expected paths anyway (may both be missing)
+        py_path = flow_dir / "notebooks" / name / f"{name}.py"
+        if not py_path.parent.exists():
+            py_path = flow_dir / "notebooks" / f"{name}.py"
 
     from pipeio.notebook.lifecycle import nb_diff
 
@@ -1285,7 +1428,9 @@ def mcp_nb_read(
     if not flow_dir.is_absolute():
         flow_dir = root / flow_dir
 
-    py_path = flow_dir / "notebooks" / f"{name}.py"
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        return {"error": f"Notebook not found: {name}"}
 
     from pipeio.notebook.lifecycle import nb_read
 
@@ -2702,7 +2847,9 @@ def mcp_nb_analyze(
     if not flow_dir.is_absolute():
         flow_dir = root / flow_dir
 
-    py_path = flow_dir / "notebooks" / f"{name}.py"
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        return {"error": f"Notebook not found: {name}"}
     return analyze_notebook(py_path)
 
 
@@ -2951,9 +3098,9 @@ def mcp_nb_exec(
     if not flow_dir.is_absolute():
         flow_dir = root / flow_dir
 
-    py_path = flow_dir / "notebooks" / f"{name}.py"
-    if not py_path.exists():
-        return {"error": f"Notebook not found: notebooks/{name}.py"}
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        return {"error": f"Notebook not found: {name}"}
 
     ipynb_path = py_path.with_suffix(".ipynb")
 

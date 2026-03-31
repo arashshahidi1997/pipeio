@@ -504,11 +504,15 @@ def nb_diff(py_path: Path) -> dict[str, Any]:
     result["py_mtime"] = py_mtime
     result["ipynb_mtime"] = ipynb_mtime
 
-    if py_mtime > ipynb_mtime:
+    # Use 2-second tolerance to avoid mtime race from jupytext
+    # (jupytext writes .ipynb then touches .py metadata, creating a small gap)
+    _MTIME_TOLERANCE = 2.0
+
+    if py_mtime - ipynb_mtime > _MTIME_TOLERANCE:
         result["status"] = "py_newer"
         result["stale"] = "ipynb"
         result["recommendation"] = "Run sync direction=py2nb"
-    elif ipynb_mtime > py_mtime:
+    elif ipynb_mtime - py_mtime > _MTIME_TOLERANCE:
         result["status"] = "ipynb_newer"
         result["stale"] = "py"
         result["recommendation"] = "Run sync direction=nb2py (human edited .ipynb)"
@@ -572,16 +576,47 @@ def nb_read(py_path: Path) -> dict[str, Any]:
     return result
 
 
-def nb_audit(root: Path) -> list[dict[str, Any]]:
+def nb_audit(root: Path, registered_only: bool = True) -> list[dict[str, Any]]:
     """Audit all notebooks: staleness, config completeness, mod coverage.
 
     Returns a list of per-notebook audit records with quality flags.
+
+    Parameters
+    ----------
+    registered_only : bool
+        If True (default), only audit flows that are in the pipeline registry.
+        Skips _template/ and other non-registered directories.
     """
     from pipeio.notebook.config import NotebookConfig
+
+    # Build set of registered flow roots for filtering
+    registered_roots: set[str] | None = None
+    if registered_only:
+        registered_roots = set()
+        try:
+            from pipeio.registry import PipelineRegistry
+            for reg_candidate in (
+                root / ".projio" / "pipeio" / "registry.yml",
+                root / ".pipeio" / "registry.yml",
+            ):
+                if reg_candidate.exists():
+                    registry = PipelineRegistry.from_yaml(reg_candidate)
+                    for entry in registry.list_flows():
+                        code_path = Path(entry.code_path)
+                        if not code_path.is_absolute():
+                            code_path = root / code_path
+                        registered_roots.add(str(code_path.resolve()))
+                    break
+        except Exception:
+            registered_roots = None  # Fall back to no filtering
 
     records: list[dict[str, Any]] = []
 
     for flow_root, cfg in find_notebook_configs(root):
+        # Skip non-registered flows
+        if registered_roots is not None:
+            if str(flow_root.resolve()) not in registered_roots:
+                continue
         # Collect mod names from the flow (if rule_list is available)
         flow_mods: set[str] = set()
         try:
@@ -707,17 +742,39 @@ def nb_lab(
     linked: list[dict[str, str]] = []
     synced: list[str] = []
 
-    for flow_root, cfg in find_notebook_configs(root):
-        # Derive pipe/flow from path: <root>/pipe/<pipe>/<flow>/
-        try:
-            rel = flow_root.relative_to(root)
-            parts = rel.parts  # e.g. ("pipe", "s01-preproc", "flow1")
-        except ValueError:
-            continue
+    # Build flow_root → (pipe, flow) lookup from registry
+    flow_lookup: dict[str, tuple[str, str]] = {}
+    try:
+        from pipeio.registry import PipelineRegistry
+        for reg_candidate in (
+            root / ".projio" / "pipeio" / "registry.yml",
+            root / ".pipeio" / "registry.yml",
+        ):
+            if reg_candidate.exists():
+                registry = PipelineRegistry.from_yaml(reg_candidate)
+                for entry in registry.list_flows():
+                    code_path = Path(entry.code_path)
+                    if not code_path.is_absolute():
+                        code_path = root / code_path
+                    flow_lookup[str(code_path.resolve())] = (entry.pipe, entry.name)
+                break
+    except Exception:
+        pass
 
-        # Registry layout: pipe/<pipe_name>/<flow_name>/ or pipelines/<pipe>/<flow>/
-        entry_pipe = parts[1] if len(parts) >= 3 else parts[0] if parts else "unknown"
-        entry_flow = parts[2] if len(parts) >= 3 else parts[1] if len(parts) >= 2 else "unknown"
+    for flow_root, cfg in find_notebook_configs(root):
+        # Look up pipe/flow from registry
+        resolved_root = str(flow_root.resolve())
+        if resolved_root in flow_lookup:
+            entry_pipe, entry_flow = flow_lookup[resolved_root]
+        else:
+            # Fallback: derive from path
+            try:
+                rel = flow_root.relative_to(root)
+                parts = rel.parts
+            except ValueError:
+                continue
+            entry_pipe = parts[-2] if len(parts) >= 2 else parts[0] if parts else "unknown"
+            entry_flow = parts[-1] if len(parts) >= 1 else "unknown"
 
         if pipe and entry_pipe != pipe:
             continue
