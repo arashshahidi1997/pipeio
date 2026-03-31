@@ -2,14 +2,26 @@
 
 ## Scope
 
-pipeio manages computational pipeline workflows in research repositories. It provides:
+pipeio is an **agent-facing authoring and discovery layer** for computational pipelines. It makes pipeline knowledge queryable and actionable for AI agents. It does **not** compete with execution engines (Snakemake), provenance systems (DataLad), app lifecycle managers (snakebids), or path resolvers (snakebids `bids()`).
 
-- A **registry** for discovering and querying the pipe/flow/mod hierarchy
-- **Flow configuration** loading and validation (declarative data contracts)
-- **Path resolution** through a pluggable adapter protocol (generic core + BIDS adapter)
+### What pipeio provides
+
+- A **registry** for discovering and querying the flow/mod hierarchy
+- **AI-safe authoring** — `rule_insert`, `config_patch`, `mod_create` with validation
+- **Contract semantics** — declarative I/O validation and cross-flow wiring
+- **Flow configuration** loading and validation
 - **Notebook lifecycle** automation (pair, sync, execute, publish)
 - **Scaffolding** for creating new flows and mods from templates
-- **Contracts** for declarative input/output validation
+- **Documentation** generation and collection
+
+### Delegation model
+
+| Concern | Delegated to | pipeio's role |
+|---------|-------------|---------------|
+| **Execution** | snakebids `run.py` → Snakemake | Registry/discovery, contract info for `--input`/`--output` |
+| **Provenance** | DataLad run records | Contract semantics inform run metadata |
+| **Path resolution** | snakebids `bids()` + `generate_inputs()` | Config authoring, not path computation |
+| **App lifecycle** | snakebids deployment modes | Flow scaffolding, not deployment |
 
 ## Ecosystem Position
 
@@ -20,7 +32,7 @@ pipeio manages computational pipeline workflows in research repositories. It pro
 | **notio** | notes | Experiment logs may reference pipeline flows |
 | **codio** | code intelligence | codio discovers reusable code; pipeio manages where it runs |
 
-pipeio is the first projio subsystem that manages **execution** rather than **information**. The others organize knowledge artifacts; pipeio organizes computational workflows and their outputs.
+Like the other projio subsystems, pipeio organizes **knowledge** — pipeline metadata, contracts, and structure — rather than managing execution directly.
 
 ## Package Structure
 
@@ -55,18 +67,17 @@ pipeio[notebook]    → + jupytext, nbconvert
 pipeio[bids]        → + snakebids
 ```
 
-## Three-Level Hierarchy
+## Flow / Mod Hierarchy
 
-The organizing principle is **pipe / flow / mod**:
+The primary unit is the **flow** — a self-contained snakebids app producing one derivative directory:
 
 ```
-pipe (e.g. preprocess, sharpwaveripple, spectrogram)
- └── flow (e.g. ieeg, ecephys, burst)
-      └── mod (e.g. badchannel, linenoise, noise_tfspace)
+flow (e.g. ieeg, ecephys, burst)
+ └── mod (e.g. badchannel, linenoise, noise_tfspace)
 ```
 
-- **pipe**: A scientific domain or processing stage
-- **flow**: A concrete workflow — owns a `Snakefile`, `config.yml`, output directory, and notebooks
+- **flow**: A concrete workflow — owns a `Snakefile`, `config.yml`, output directory, and notebooks. Each flow produces one derivative.
+- **pipe**: A category tag grouping related flows (e.g. `preprocess`, `spectral`). Not a hierarchical container — the pipe/flow nesting is being flattened.
 - **mod**: A logical module within a flow — a group of related rules identified by rule name prefix
 
 This hierarchy is formalized in a registry YAML and can be discovered by scanning the filesystem.

@@ -17,13 +17,34 @@ Python >= 3.11 required. Package source lives in `src/pipeio/` (src-layout via s
 
 ## What pipeio Is
 
-pipeio is a **standalone CLI tool and library** for pipeline registry, notebook lifecycle, and flow management in research repositories. It manages computational workflows organized in a **pipe / flow / mod** hierarchy and provides notebook lifecycle automation (pair/sync/exec/publish).
+pipeio is an **agent-facing authoring and discovery layer** for computational pipelines in research repositories. It makes pipeline knowledge — registry, configs, rules, contracts, notebooks — queryable and actionable for AI agents via MCP tools.
 
-When you run `pipeio init` in a project, it scaffolds a `.pipeio/` directory with registry and config files. The CLI and MCP tools then operate on that project's registry.
+**North star:** pipeio does not compete with execution engines, provenance systems, app lifecycle managers, or path resolvers. It sits above them, providing structured access to pipeline metadata and safe authoring operations.
+
+### Delegation Model
+
+pipeio delegates core pipeline concerns to specialized tools:
+
+| Concern | Delegated to | pipeio's role |
+|---------|-------------|---------------|
+| **Execution** | snakebids `run.py` → Snakemake | Registry/discovery, not launching |
+| **Provenance** | DataLad run records | Contract semantics inform `--input`/`--output` |
+| **Path resolution** | snakebids `bids()` + `generate_inputs()` | Config authoring, not path computation |
+| **App lifecycle** | snakebids deployment modes | Flow scaffolding, not deployment |
+
+### What pipeio Owns
+
+- **Registry & discovery** — scan, query, validate the flow/mod hierarchy
+- **AI-safe authoring** — `rule_insert`, `config_patch`, `mod_create` with validation
+- **Contract semantics** — I/O validation, cross-flow wiring
+- **Notebook lifecycle** — pair, sync, execute, publish
+- **Documentation** — collect, nav generation, modkey bibliography
+
+### One Flow = One Derivative
+
+Each flow is a self-contained snakebids app producing one derivative directory. The `pipe` field is a **category tag** (e.g. `preprocess`, `spectral`) — not a hierarchical container. Flows are the primary unit of organization.
 
 ### Ecosystem Siblings
-
-pipeio follows the same architectural patterns as its sibling tools:
 
 | Tool | Purpose | Scaffolds | CLI entry |
 |------|---------|-----------|-----------|
@@ -32,16 +53,16 @@ pipeio follows the same architectural patterns as its sibling tools:
 | **indexio** | Semantic indexing/RAG | `infra/indexio/` | `indexio init-config` |
 | **codio** | Code reuse discovery | `.codio/` | `codio init` |
 | **notio** | Structured notes | `.notio/` | `notio init` |
-| **pipeio** | Pipeline management | `.pipeio/` | `pipeio init` |
+| **pipeio** | Pipeline authoring & discovery | `.pipeio/` | `pipeio init` |
 
 All tools share: src-layout, argparse CLI, YAML configs, Pydantic models, projio MCP integration.
 
 ## Architecture
 
-### Three-Level Hierarchy: pipe / flow / mod
+### Flow / Mod Hierarchy
 
-- **pipe**: A scientific domain (preprocessing, ripple detection, spectral analysis)
-- **flow**: A concrete workflow with its own Snakefile, config.yml, and output directory
+- **flow**: A self-contained snakebids app — owns a Snakefile, config.yml, output directory, and notebooks. Each flow produces one derivative directory.
+- **pipe**: A category tag grouping related flows (e.g. `preprocess`, `spectral`). Not a hierarchical container.
 - **mod**: A logical module within a flow — a group of related rules (identified by rule name prefix)
 
 ### Core Modules
@@ -94,7 +115,11 @@ Tools exposed via projio's MCP server (35 tools across 7 categories):
 
 **Config authoring:** `pipeio_config_read`, `pipeio_config_patch`, `pipeio_config_init`
 
-**Execution & tracking:** `pipeio_dag`, `pipeio_completion`, `pipeio_cross_flow`, `pipeio_log_parse`, `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`, `pipeio_contracts_validate`
+**Contracts & tracking:** `pipeio_contracts_validate`, `pipeio_cross_flow`, `pipeio_completion`
+
+**Adapters** *(thin wrappers, may migrate to datalad run)*: `pipeio_dag`, `pipeio_log_parse`, `pipeio_config_init`
+
+**Deprecated** *(to be replaced by datalad run)*: `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`
 
 **Documentation:** `pipeio_docs_collect`, `pipeio_docs_nav`, `pipeio_mkdocs_nav_patch`, `pipeio_modkey_bib`
 

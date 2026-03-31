@@ -50,6 +50,7 @@ class FlowEntry(BaseModel):
     config_path: str | None = None
     doc_path: str | None = None
     mods: dict[str, ModEntry] = Field(default_factory=dict)
+    app_type: str = ""  # "snakebids", "snakemake", or "" (unknown/legacy)
 
 
 class PipelineRegistry(BaseModel):
@@ -212,7 +213,7 @@ def _discover_flows(
     if (pipe_dir / "Snakefile").exists() or (pipe_dir / "config.yml").exists():
         key = pipe
         doc_path = _find_doc_path(docs_dir, pipe, pipe) if docs_dir else None
-        config_path = str(pipe_dir / "config.yml") if (pipe_dir / "config.yml").exists() else None
+        config_path = _resolve_config_path(pipe_dir)
         flows[key] = FlowEntry(
             name=pipe,
             pipe=pipe,
@@ -220,6 +221,7 @@ def _discover_flows(
             config_path=config_path,
             doc_path=doc_path,
             mods=_discover_mods(pipe_dir),
+            app_type=_detect_app_type(pipe_dir),
         )
 
     # Check subdirectories for additional flows
@@ -232,7 +234,7 @@ def _discover_flows(
             if key in flows:
                 continue
             doc_path = _find_doc_path(docs_dir, pipe, flow) if docs_dir else None
-            config_path = str(child / "config.yml") if (child / "config.yml").exists() else None
+            config_path = _resolve_config_path(child)
             flows[key] = FlowEntry(
                 name=flow,
                 pipe=pipe,
@@ -240,6 +242,7 @@ def _discover_flows(
                 config_path=config_path,
                 doc_path=doc_path,
                 mods=_discover_mods(child),
+                app_type=_detect_app_type(child),
             )
 
     # Check for .smk files at pipe root
@@ -249,16 +252,37 @@ def _discover_flows(
         if key in flows:
             continue
         doc_path = _find_doc_path(docs_dir, pipe, flow) if docs_dir else None
-        config_path = str(pipe_dir / "config.yml") if (pipe_dir / "config.yml").exists() else None
+        config_path = _resolve_config_path(pipe_dir)
         flows[key] = FlowEntry(
             name=flow,
             pipe=pipe,
             code_path=str(pipe_dir),
             config_path=config_path,
             doc_path=doc_path,
+            app_type=_detect_app_type(pipe_dir),
         )
 
     return flows
+
+
+def _detect_app_type(flow_dir: Path) -> str:
+    """Return app_type for a flow directory: 'snakebids', 'snakemake', or ''."""
+    if (flow_dir / "run.py").exists():
+        return "snakebids"
+    if (flow_dir / "Snakefile").exists():
+        return "snakemake"
+    return ""
+
+
+def _resolve_config_path(flow_dir: Path) -> str | None:
+    """Return the config path for a flow, preferring config/snakebids.yml over config.yml."""
+    snakebids_cfg = flow_dir / "config" / "snakebids.yml"
+    if snakebids_cfg.exists():
+        return str(snakebids_cfg)
+    plain_cfg = flow_dir / "config.yml"
+    if plain_cfg.exists():
+        return str(plain_cfg)
+    return None
 
 
 _RULE_RE = re.compile(r"^\s*rule\s+(\w+)\s*:", re.MULTILINE)

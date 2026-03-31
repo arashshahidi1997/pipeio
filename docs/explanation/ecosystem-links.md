@@ -11,14 +11,26 @@ Pipeio is part of the [projio](https://github.com/arashshahidi1997/projio) ecosy
 | **indexio** | Retrieval | Corpus indexing, chunking, embedding, semantic search |
 | **codio** | Code intelligence | Library registry, code reuse discovery |
 | **notio** | Notes | Experiment logs, design decisions, idea capture |
-| **pipeio** | Pipelines | Pipeline registry, notebook lifecycle, flow management |
+| **pipeio** | Pipelines | Pipeline authoring, discovery, contracts, notebooks |
+
+## Delegation model
+
+pipeio is an agent-facing authoring and discovery layer. It does not own execution or provenance — those are delegated:
+
+| Concern | Delegated to | pipeio's role |
+|---------|-------------|---------------|
+| **Execution** | snakebids `run.py` → Snakemake | Registry/discovery, contract data |
+| **Provenance** | DataLad run records | Contract semantics inform `--input`/`--output` |
+| **Path resolution** | snakebids `bids()` + `generate_inputs()` | Config authoring |
+| **App lifecycle** | snakebids deployment modes | Flow scaffolding |
 
 ## How pipeio connects
 
-- **projio** registers pipeio's MCP tools (`pipeio_flow_list`, `pipeio_flow_status`, etc.) so AI agents can query pipeline state
+- **projio** registers pipeio's MCP tools so AI agents can query and author pipeline structure
 - **indexio** can index pipeio's notebook outputs and pipeline documentation for semantic search
 - **codio** may reference pipeline code as internal libraries in its catalog
 - **notio** captures design decisions and experiment logs that reference specific pipeline flows
+- **DataLad** provides provenance for pipeline runs; pipeio's contract data informs `datalad run` input/output declarations
 
 ## Shared patterns
 

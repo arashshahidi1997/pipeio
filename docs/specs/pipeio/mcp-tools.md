@@ -2,7 +2,21 @@
 
 ## Purpose
 
-pipeio exposes tools through projio's MCP server for AI agent access to pipeline management operations. Tools are organized into 7 categories: flow & registry, notebook lifecycle, mod management, rule authoring, config authoring, execution & tracking, and documentation.
+pipeio exposes tools through projio's MCP server for AI agent access to pipeline authoring and discovery. pipeio is an agent-facing layer — it does not own execution (Snakemake), provenance (DataLad), path resolution (snakebids), or app lifecycle (snakebids).
+
+### Tool Categories (v2)
+
+| Category | Count | Status |
+|----------|-------|--------|
+| Flow & registry | 4 | **Keep** |
+| Notebook lifecycle | 7 | **Keep** |
+| Mod management | 3 | **Keep** |
+| Rule authoring | 4 | **Keep** |
+| Config authoring | 2 | **Keep** (config_read, config_patch) |
+| Contracts & tracking | 3 | **Keep** (contracts_validate, cross_flow, completion) |
+| Documentation | 4 | **Keep** |
+| Adapters | 4 | **Thin-to-adapter** (dag, completion, log_parse, config_init) |
+| Execution | 4 | **Deprecated** — migrate to `datalad run` (run, run_status, run_dashboard, run_kill) |
 
 ## Tool Registration
 
@@ -343,22 +357,14 @@ pipeio_config_patch(
 ) → dict
 ```
 
-### Execution & Tracking
+### Contracts & Tracking
 
-#### `pipeio_dag`
+#### `pipeio_contracts_validate`
 
-Rule dependency graph via static Snakefile analysis. Optionally filter to ancestors of a target rule.
-
-```
-pipeio_dag(pipe: str, flow: str = "", target: str = "") → dict
-```
-
-#### `pipeio_completion`
-
-Check per-session completion by comparing expected outputs (from registry) against filesystem.
+Validate I/O contracts for all flows.
 
 ```
-pipeio_completion(pipe: str, flow: str = "", mod: str = "") → dict
+pipeio_contracts_validate() → dict
 ```
 
 #### `pipeio_cross_flow`
@@ -369,6 +375,26 @@ Map output_registry → input_registry chains across flows. Detects stale or bro
 pipeio_cross_flow(pipe: str = "", flow: str = "") → dict
 ```
 
+#### `pipeio_completion`
+
+Check per-session completion by comparing expected outputs (from registry) against filesystem.
+
+```
+pipeio_completion(pipe: str, flow: str = "", mod: str = "") → dict
+```
+
+### Adapters (thin wrappers — may migrate)
+
+These wrap external tool output in pipeio's structured format. They may become thinner or be replaced by direct tool calls.
+
+#### `pipeio_dag`
+
+Rule dependency graph via static Snakefile analysis. Optionally filter to ancestors of a target rule.
+
+```
+pipeio_dag(pipe: str, flow: str = "", target: str = "") → dict
+```
+
 #### `pipeio_log_parse`
 
 Parse Snakemake log files for completed/failed rules, timing, and error summaries.
@@ -377,7 +403,11 @@ Parse Snakemake log files for completed/failed rules, timing, and error summarie
 pipeio_log_parse(pipe: str, flow: str = "", run_id: str = "", log_path: str = "") → dict
 ```
 
-#### `pipeio_run`
+### Execution (deprecated — migrating to datalad run)
+
+These tools manage Snakemake execution via screen sessions and a custom `runs.json` state file. They duplicate concerns better handled by DataLad run records and will be replaced.
+
+#### `pipeio_run` *(deprecated)*
 
 Launch a Snakemake run in a detached screen session.
 
@@ -385,7 +415,7 @@ Launch a Snakemake run in a detached screen session.
 pipeio_run(pipe: str, flow: str = "", targets: list[str] = [], dry_run: bool = False, cores: int = 1) → dict
 ```
 
-#### `pipeio_run_status`
+#### `pipeio_run_status` *(deprecated)*
 
 Check status of a running or completed Snakemake run.
 
@@ -393,7 +423,7 @@ Check status of a running or completed Snakemake run.
 pipeio_run_status(run_id: str) → dict
 ```
 
-#### `pipeio_run_dashboard`
+#### `pipeio_run_dashboard` *(deprecated)*
 
 Aggregate status of all tracked runs.
 
@@ -401,20 +431,12 @@ Aggregate status of all tracked runs.
 pipeio_run_dashboard() → dict
 ```
 
-#### `pipeio_run_kill`
+#### `pipeio_run_kill` *(deprecated)*
 
 Kill a running Snakemake run by terminating its screen session.
 
 ```
 pipeio_run_kill(run_id: str) → dict
-```
-
-#### `pipeio_contracts_validate`
-
-Validate I/O contracts for all flows.
-
-```
-pipeio_contracts_validate() → dict
 ```
 
 ### Documentation

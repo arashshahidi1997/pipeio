@@ -56,6 +56,7 @@ def mcp_flow_status(root: Path, pipe: str, flow: str) -> dict[str, Any]:
         "pipe": entry.pipe,
         "flow": entry.name,
         "code_path": entry.code_path,
+        "app_type": entry.app_type,
         "config_exists": False,
         "docs_exists": entry.doc_path is not None and Path(entry.doc_path).exists() if entry.doc_path else False,
     }
@@ -547,6 +548,7 @@ def mcp_registry_scan(root: Path) -> dict[str, Any]:
             {
                 "pipe": f.pipe,
                 "flow": f.name,
+                "app_type": f.app_type,
                 "has_config": f.config_path is not None,
                 "has_docs": f.doc_path is not None,
                 "mod_count": len(f.mods),

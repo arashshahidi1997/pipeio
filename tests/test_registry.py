@@ -201,3 +201,46 @@ def test_validate_missing_code_path(tmp_path):
     assert not result.ok
     assert any("Code path" in e for e in result.errors)
     assert any("Config path" in e for e in result.errors)
+
+
+# ---- app_type detection ----
+
+def test_registry_scan_detects_snakebids_app(tmp_path):
+    """scan() sets app_type='snakebids' when run.py is present."""
+    pipes_dir = tmp_path / "pipelines"
+    flow_dir = pipes_dir / "preproc"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "Snakefile").touch()
+    (flow_dir / "run.py").touch()
+
+    reg = PipelineRegistry.scan(pipes_dir)
+    entry = reg.get("preproc")
+    assert entry.app_type == "snakebids"
+
+
+def test_registry_scan_detects_plain_snakemake(tmp_path):
+    """scan() sets app_type='snakemake' when Snakefile exists but no run.py."""
+    pipes_dir = tmp_path / "pipelines"
+    flow_dir = pipes_dir / "preproc"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "Snakefile").touch()
+
+    reg = PipelineRegistry.scan(pipes_dir)
+    entry = reg.get("preproc")
+    assert entry.app_type == "snakemake"
+
+
+def test_flow_status_includes_app_type(tmp_path):
+    """mcp_flow_status returns app_type in its output dict."""
+    from pipeio.mcp import mcp_registry_scan, mcp_flow_status
+
+    (tmp_path / ".pipeio").mkdir()
+    flow_dir = tmp_path / "pipelines" / "preproc"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "Snakefile").touch()
+    (flow_dir / "run.py").touch()
+
+    mcp_registry_scan(tmp_path)
+    result = mcp_flow_status(tmp_path, "preproc", "preproc")
+    assert "app_type" in result
+    assert result["app_type"] == "snakebids"

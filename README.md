@@ -1,25 +1,24 @@
 # pipeio
 
-Pipeline registry, notebook lifecycle, and flow management for research repositories.
+Agent-facing authoring and discovery layer for computational pipelines in research repositories.
 
 Part of the [projio](https://github.com/arashshahidi1997/projio) ecosystem.
 
 ## What pipeio does
 
-pipeio manages computational pipeline workflows organized in a **pipe / flow / mod** hierarchy:
+pipeio makes pipeline knowledge queryable and actionable for AI agents. It does not compete with execution engines (Snakemake), provenance systems (DataLad), app lifecycle managers (snakebids), or path resolvers (snakebids `bids()`).
 
-- **pipe** — a scientific domain (preprocessing, ripple detection, spectral analysis)
-- **flow** — a concrete workflow with its own Snakefile, config, and output directory
-- **mod** — a logical module within a flow (a group of related rules)
+Each **flow** is a self-contained snakebids app producing one derivative directory. The `pipe` field is a category tag grouping related flows. **Mods** are logical modules (rule groups) within a flow.
 
 ### Core features
 
-- **Registry** — scan, load, validate, and query the pipe/flow/mod hierarchy
+- **Registry & discovery** — scan, load, validate, and query the flow/mod hierarchy
+- **AI-safe authoring** — `rule_insert`, `config_patch`, `mod_create` with validation
+- **Contract semantics** — declarative I/O validation and cross-flow wiring
 - **Flow config** — declarative output registry (data contracts) in `config.yml`
-- **Path resolution** — generic resolver protocol with pluggable adapters (SimpleResolver built-in, BIDS optional)
-- **Notebook lifecycle** — pair, sync, execute, and publish Jupytext notebooks *(planned)*
-- **Scaffolding** — create new flows from templates
-- **Contracts** — declarative input/output validation *(planned)*
+- **Notebook lifecycle** — pair, sync, execute, and publish Jupytext notebooks
+- **Scaffolding** — create new flows and mods from templates
+- **Documentation** — collect, nav generation, modkey bibliography
 
 ## Install
 

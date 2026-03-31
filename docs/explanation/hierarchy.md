@@ -1,27 +1,23 @@
-# Three-level hierarchy
+# Flow / Mod Hierarchy
 
-Pipeio organizes computational pipelines in a **pipe / flow / mod** hierarchy.
-
-## Pipe
-
-A **pipe** represents a scientific domain — a broad area of analysis.
-
-Examples: `preprocess`, `brainstate`, `sharpwaveripple`, `spectral`
-
-A pipe groups related flows that share a domain but may use different approaches or target different data types.
+Pipeio organizes computational pipelines around **flows** — the primary unit of organization.
 
 ## Flow
 
-A **flow** is a concrete workflow with its own:
+A **flow** is a self-contained snakebids app producing one derivative directory. It owns:
 
 - **Snakefile** or workflow entry point
 - **config.yml** declaring inputs, outputs, and the output registry
 - **Output directory** under `derivatives/`
 - Optional **notebooks/** for analysis and visualization
 
-Examples: `preprocess/ieeg`, `preprocess/ecephys`, `brainstate/brainstate`
+Examples: `ieeg`, `ecephys`, `brainstate`
 
-When a pipe has only one flow, the flow often shares the pipe's name (e.g., `brainstate/brainstate`). Pipeio's `get()` method auto-selects in this case.
+Each flow is categorized by a `pipe` tag but stands alone as a deployable app. Pipeio's `get()` method can auto-select flows when unambiguous.
+
+## Pipe (category tag)
+
+A **pipe** is a category tag grouping related flows by scientific domain (e.g. `preprocess`, `spectral`). It is not a hierarchical container — the pipe/flow nesting is being flattened. Pipes exist as metadata for filtering and organization.
 
 ## Mod
 
