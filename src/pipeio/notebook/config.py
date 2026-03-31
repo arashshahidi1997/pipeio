@@ -52,3 +52,13 @@ class NotebookConfig(BaseModel):
         with open(path) as fh:
             raw = yaml.safe_load(fh) or {}
         return cls.model_validate(raw)
+
+    def to_yaml(self, path: Path) -> None:
+        """Write notebook config to a YAML file."""
+        data = self.model_dump(exclude_defaults=True)
+        # Always include entries even if empty
+        if "entries" not in data:
+            data["entries"] = []
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as fh:
+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)

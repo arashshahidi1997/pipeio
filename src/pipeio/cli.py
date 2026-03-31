@@ -530,6 +530,36 @@ def _cmd_registry_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_nb_scan(args: argparse.Namespace) -> int:
+    from pipeio.notebook.lifecycle import nb_scan
+
+    root = Path(args.root) if args.root else _find_root()
+    register = getattr(args, "register", False)
+
+    results = nb_scan(root, register=register)
+    if not results:
+        print("No percent-format notebooks found in notebooks/ directories.")
+        return 0
+
+    unregistered = [r for r in results if not r["registered"]]
+    registered = [r for r in results if r["registered"]]
+
+    if registered:
+        print(f"Registered ({len(registered)}):")
+        for r in registered:
+            print(f"  {r['name']}  ({r['rel_path']})")
+
+    if unregistered:
+        print(f"\nUnregistered ({len(unregistered)}):")
+        for r in unregistered:
+            tag = " → registered" if r.get("newly_registered") else ""
+            print(f"  {r['name']}  ({r['rel_path']}){tag}")
+        if not register:
+            print("\n  Run with --register to auto-add to notebook.yml")
+
+    return 0
+
+
 def _cmd_nb_status(args: argparse.Namespace) -> int:
     from pipeio.notebook.lifecycle import nb_status
 
@@ -850,6 +880,9 @@ def main(argv: list[str] | None = None) -> int:
     nb_sub.add_parser("publish", help="Publish notebooks to docs")
     nb_sub.add_parser("status", help="Show notebook sync status")
 
+    nb_scan_p = nb_sub.add_parser("scan", help="Scan for unregistered notebooks")
+    nb_scan_p.add_argument("--register", action="store_true", help="Auto-register found notebooks into notebook.yml")
+
     nb_lab_p = nb_sub.add_parser("lab", help="Build symlink manifest and launch Jupyter Lab")
     nb_lab_p.add_argument("--pipe", help="Filter to a specific pipeline")
     nb_lab_p.add_argument("--flow", help="Filter to a specific flow")
@@ -942,6 +975,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_nb_publish(args)
         if args.nb_command == "lab":
             return _cmd_nb_lab(args)
+        if args.nb_command == "scan":
+            return _cmd_nb_scan(args)
         nb_p.print_help()
         return 0
 

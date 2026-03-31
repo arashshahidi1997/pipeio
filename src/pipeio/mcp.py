@@ -1056,6 +1056,44 @@ def mcp_nb_lab(
     return result
 
 
+def mcp_nb_scan(
+    root: Path,
+    register: bool = False,
+) -> dict[str, Any]:
+    """Scan for percent-format .py notebooks and compare against notebook.yml.
+
+    Discovers .py files with ``# %%`` cell markers in ``notebooks/`` directories
+    and reports which are registered vs unregistered.
+
+    Args:
+        root: Project root.
+        register: If True, auto-register unregistered notebooks into
+            notebook.yml with defaults (pair_ipynb=True, status=draft).
+    """
+    from pipeio.notebook.lifecycle import nb_scan
+
+    results = nb_scan(root, register=register)
+
+    # Relativize paths
+    for item in results:
+        for key in ("py_path", "flow_root"):
+            if key in item:
+                try:
+                    item[key] = str(Path(item[key]).relative_to(root))
+                except ValueError:
+                    pass
+
+    registered = [r for r in results if r["registered"]]
+    unregistered = [r for r in results if not r["registered"]]
+
+    return {
+        "total": len(results),
+        "registered": len(registered),
+        "unregistered": len(unregistered),
+        "notebooks": results,
+    }
+
+
 def mcp_nb_publish(
     root: Path,
     pipe: str,

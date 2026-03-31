@@ -32,6 +32,126 @@ def find_notebook_configs(root: Path) -> list[tuple[Path, Any]]:
     return results
 
 
+def _is_percent_format(py_path: Path) -> bool:
+    """Return True if *py_path* looks like a jupytext percent-format notebook."""
+    try:
+        head = py_path.read_text(encoding="utf-8", errors="ignore")[:4096]
+        return "# %%" in head
+    except Exception:
+        return False
+
+
+def nb_scan(root: Path, *, register: bool = False) -> list[dict[str, Any]]:
+    """Scan for percent-format .py notebooks and compare against notebook.yml.
+
+    Walks every ``notebooks/`` directory under *root*, finds ``.py`` files
+    containing ``# %%`` cell markers, and checks whether they are registered
+    in the corresponding ``notebook.yml``.
+
+    Parameters
+    ----------
+    root : Path
+        Project root.
+    register : bool
+        If True, auto-register unregistered notebooks into ``notebook.yml``
+        with sensible defaults (pair_ipynb=True, pair_myst=True, status=draft).
+
+    Returns
+    -------
+    List of dicts, one per discovered notebook:
+        ``name``, ``py_path``, ``flow_root``, ``registered`` (bool),
+        ``newly_registered`` (bool, only when register=True).
+    """
+    from pipeio.notebook.config import NotebookConfig, NotebookEntry
+
+    results: list[dict[str, Any]] = []
+
+    # Find all notebooks/ directories
+    seen_nb_dirs: set[Path] = set()
+    for py_file in sorted(root.rglob("notebooks/*.py")):
+        if not _is_percent_format(py_file):
+            continue
+        nb_dir = py_file.parent
+        flow_root = nb_dir.parent
+        seen_nb_dirs.add(nb_dir)
+
+        # Also check subdirectory pattern: notebooks/<name>/<name>.py
+        # (already caught by the glob)
+
+    # Also check notebooks/<subdir>/<name>.py pattern
+    for py_file in sorted(root.rglob("notebooks/**/*.py")):
+        if not _is_percent_format(py_file):
+            continue
+        # flow_root is the parent of the notebooks/ dir
+        nb_dir_candidate = py_file.parent
+        while nb_dir_candidate.name != "notebooks" and nb_dir_candidate != root:
+            nb_dir_candidate = nb_dir_candidate.parent
+        if nb_dir_candidate.name == "notebooks":
+            seen_nb_dirs.add(nb_dir_candidate)
+
+    # Now process each notebooks/ dir
+    processed_files: set[Path] = set()
+    for nb_dir in sorted(seen_nb_dirs):
+        flow_root = nb_dir.parent
+        cfg_path = nb_dir / "notebook.yml"
+
+        # Load existing config or create empty
+        if cfg_path.exists():
+            try:
+                cfg = NotebookConfig.from_yaml(cfg_path)
+            except Exception:
+                cfg = NotebookConfig()
+        else:
+            cfg = NotebookConfig()
+
+        registered_paths = {Path(e.path).resolve() for e in cfg.entries
+                           if (flow_root / e.path).exists()}
+        registered_stems = {Path(e.path).stem for e in cfg.entries}
+
+        modified = False
+
+        # Scan .py files in this notebooks/ dir (flat and nested)
+        for py_file in sorted(nb_dir.rglob("*.py")):
+            if not _is_percent_format(py_file) or py_file in processed_files:
+                continue
+            processed_files.add(py_file)
+
+            try:
+                rel_path = str(py_file.relative_to(flow_root))
+            except ValueError:
+                rel_path = str(py_file)
+
+            is_registered = (py_file.stem in registered_stems
+                             or py_file.resolve() in registered_paths)
+
+            entry_info: dict[str, Any] = {
+                "name": py_file.stem,
+                "py_path": str(py_file),
+                "rel_path": rel_path,
+                "flow_root": str(flow_root),
+                "registered": is_registered,
+            }
+
+            if not is_registered and register:
+                new_entry = NotebookEntry(
+                    path=rel_path,
+                    status="draft",
+                    pair_ipynb=True,
+                    pair_myst=True,
+                    publish_myst=True,
+                )
+                cfg.entries.append(new_entry)
+                modified = True
+                entry_info["newly_registered"] = True
+
+            results.append(entry_info)
+
+        if modified:
+            cfg.to_yaml(cfg_path)
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Status (no optional deps)
 # ---------------------------------------------------------------------------
