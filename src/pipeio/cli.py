@@ -24,6 +24,27 @@ def _find_root(start: Path | None = None) -> Path:
     return cwd
 
 
+def _detect_flow_from_cwd(root: Path) -> tuple[str, str] | None:
+    """Try to detect (pipe, flow) from cwd by matching against registry entries."""
+    from pipeio.registry import PipelineRegistry
+
+    reg_path = _find_registry(root)
+    if not reg_path or not reg_path.exists():
+        return None
+
+    cwd = Path.cwd().resolve()
+    registry = PipelineRegistry.from_yaml(reg_path)
+    for entry in registry.list_flows():
+        code_path = Path(entry.code_path)
+        if not code_path.is_absolute():
+            code_path = root / code_path
+        code_path = code_path.resolve()
+        # cwd is inside this flow's code directory
+        if cwd == code_path or code_path in cwd.parents:
+            return (entry.pipe, entry.name)
+    return None
+
+
 def _find_registry(root: Path) -> Path | None:
     """Locate the pipeline registry, checking .projio/pipeio/ first."""
     for candidate in (
@@ -685,6 +706,13 @@ def _cmd_nb_lab(args: argparse.Namespace) -> int:
     flow = getattr(args, "flow", None)
     do_sync = getattr(args, "sync", False)
     refresh_only = getattr(args, "refresh", False)
+
+    # Auto-detect pipe/flow from cwd if not specified
+    if not pipe and not flow:
+        detected = _detect_flow_from_cwd(root)
+        if detected:
+            pipe, flow = detected
+            print(f"Detected flow: {pipe}/{flow}")
 
     try:
         result = nb_lab(root, pipe=pipe, flow=flow, sync=do_sync)
