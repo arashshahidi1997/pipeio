@@ -59,10 +59,19 @@ paths = sess.bundle("badlabel")  # {'npy': Path(...), 'featuremap': Path(...)}
 | Flow config | **Done** | load, extra inputs, groups/products, validation |
 | Path resolution | **Done** | SimpleResolver, PipelineContext, Session, Stage |
 | CLI | **Done** | init, flow list/new, registry scan/validate |
-| MCP tools | **Done** | flow_list, flow_status, nb_status, registry_validate |
-| Contracts | Partial | Models defined, CLI not wired |
-| Notebook lifecycle | Planned | Requires `pipeio[notebook]` |
+| MCP tools | **Done** | 35 tools across 7 categories (authoring, discovery, contracts, notebooks, docs) |
+| Contracts | **Done** | Models, I/O validation, cross-flow wiring |
+| Notebook lifecycle | **Done** | pair, sync, execute, publish, pipeline composite |
 | BIDS adapter | Stub | Requires `pipeio[bids]` |
+
+### Delegation
+
+pipeio delegates execution concerns to specialized tools:
+
+- **Execution**: snakebids `run.py` → Snakemake
+- **Provenance**: DataLad run records
+- **Path resolution**: snakebids `bids()` + `generate_inputs()`
+- **App lifecycle**: snakebids deployment modes
 
 ## Development
 

@@ -1823,6 +1823,22 @@ def mcp_config_read(root: Path, pipe: str, flow: str | None = None) -> dict[str,
                 )
         bids_signatures[group_name] = group_sigs
 
+    # Resolve path patterns via PipelineContext for each group/member
+    resolved_patterns: dict[str, dict[str, str]] = {}
+    try:
+        from pipeio.config import FlowConfig
+        from pipeio.resolver import PipelineContext
+
+        flow_config = FlowConfig.from_yaml(cfg_path)
+        ctx = PipelineContext.from_config(flow_config, root)
+        for group_name in ctx.groups():
+            group_patterns: dict[str, str] = {}
+            for member_name in ctx.products(group_name):
+                group_patterns[member_name] = ctx.pattern(group_name, member_name)
+            resolved_patterns[group_name] = group_patterns
+    except Exception:
+        pass  # non-fatal: bids_signatures still available
+
     try:
         rel_path = str(cfg_path.relative_to(root))
     except ValueError:
@@ -1838,6 +1854,7 @@ def mcp_config_read(root: Path, pipe: str, flow: str | None = None) -> dict[str,
         "member_sets": member_sets,
         "params": params,
         "bids_signatures": bids_signatures,
+        "resolved_patterns": resolved_patterns,
     }
 
 
@@ -2571,27 +2588,36 @@ def mcp_nb_exec(
 
 
 # ---------------------------------------------------------------------------
-# MCP tools: DAG (rule dependency graph)
+# MCP tools: snakemake native DAG export and report
 # ---------------------------------------------------------------------------
 
 
-def mcp_dag(
+def mcp_dag_export(
     root: Path,
     pipe: str,
     flow: str | None = None,
-    target: str | None = None,
+    graph_type: str = "rulegraph",
+    output_format: str = "dot",
+    snakemake_cmd: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Extract rule dependency graph via static Snakefile analysis.
+    """Export rule/job DAG via snakemake's native graph output.
 
-    Builds a graph by matching rule outputs to rule inputs via variable names
-    (``rules.<rule>.output.<member>``).  No Snakemake DAG loading needed.
+    Shells out to ``snakemake --rulegraph`` (or ``--dag``, ``--d3dag``)
+    and optionally converts dot output to SVG via graphviz.
 
     Args:
         root: Project root.
         pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
-        target: If given, return only the subgraph reachable from this rule.
+        graph_type: ``rulegraph`` (rule-level, compact), ``dag`` (job-level),
+            or ``d3dag`` (JSON for D3.js).
+        output_format: ``dot``, ``mermaid``, ``svg`` (requires graphviz), or
+            ``json`` (only with d3dag).
+        snakemake_cmd: Command tokens to invoke snakemake (e.g.
+            ``["conda", "run", "-n", "cogpy", "snakemake"]``).
     """
+    import subprocess
+
     from pipeio.registry import PipelineRegistry
 
     registry_path = _find_registry(root)
@@ -2608,88 +2634,154 @@ def mcp_dag(
     if not flow_dir.is_absolute():
         flow_dir = root / flow_dir
 
-    # Parse all rules
-    candidates: list[Path] = list(flow_dir.glob("*.smk"))
     snakefile = flow_dir / "Snakefile"
-    if snakefile.exists():
-        candidates.insert(0, snakefile)
+    if not snakefile.exists():
+        return {"error": f"No Snakefile in {flow_dir.relative_to(root)}"}
 
-    all_rules: list[dict[str, Any]] = []
-    for sf in candidates:
+    snake_base = snakemake_cmd or ["snakemake"]
+
+    # Build the snakemake graph command
+    # --dag and --rulegraph accept an optional format via nargs="?"
+    # (choices: "dot" (default), "mermaid-js").  --d3dag is boolean.
+    if graph_type == "d3dag":
+        cmd = [*snake_base, "--snakefile", str(snakefile),
+               "--directory", str(flow_dir), "--d3dag"]
+    elif graph_type == "dag":
+        fmt_arg = "mermaid-js" if output_format == "mermaid" else "dot"
+        cmd = [*snake_base, "--snakefile", str(snakefile),
+               "--directory", str(flow_dir), "--dag", fmt_arg]
+    else:  # rulegraph (default)
+        fmt_arg = "mermaid-js" if output_format == "mermaid" else "dot"
+        cmd = [*snake_base, "--snakefile", str(snakefile),
+               "--directory", str(flow_dir), "--rulegraph", fmt_arg]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=str(root),
+            timeout=60, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "Snakemake graph generation timed out (60s)"}
+
+    if result.returncode != 0:
+        return {"error": f"Snakemake failed: {result.stderr[:1000]}"}
+
+    graph_output = result.stdout
+
+    # Optionally convert dot to SVG
+    if output_format == "svg" and graph_type != "d3dag":
         try:
-            text = sf.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        all_rules.extend(_parse_snakefile_rules(text))
+            svg_result = subprocess.run(
+                ["dot", "-Tsvg"], input=graph_output, capture_output=True,
+                text=True, timeout=30, check=False,
+            )
+            if svg_result.returncode != 0:
+                return {
+                    "error": f"graphviz dot failed: {svg_result.stderr[:500]}",
+                    "dot": graph_output,
+                }
+            graph_output = svg_result.stdout
+        except FileNotFoundError:
+            return {
+                "error": "graphviz 'dot' not found — install with: apt install graphviz",
+                "dot": graph_output,
+            }
 
-    if not all_rules:
-        return {"error": "No rules found in Snakefile or .smk files"}
-
-    # Build output → rule mapping
-    rule_names = {r["name"] for r in all_rules}
-    output_to_rule: dict[str, str] = {}
-    for r in all_rules:
-        for oname in r.get("output", {}):
-            output_to_rule[f"rules.{r['name']}.output.{oname}"] = r["name"]
-
-    # Build edges by scanning inputs for rules.X.output.Y references
-    edges: list[dict[str, str]] = []
-    adj: dict[str, set[str]] = {r["name"]: set() for r in all_rules}
-    rev_adj: dict[str, set[str]] = {r["name"]: set() for r in all_rules}
-
-    rules_ref_re = re.compile(r"rules\.(\w+)\.output(?:\.(\w+)|\[(\d+)\])?")
-
-    for r in all_rules:
-        for iname, iexpr in r.get("input", {}).items():
-            for m in rules_ref_re.finditer(str(iexpr)):
-                dep_rule = m.group(1)
-                if dep_rule in rule_names:
-                    edges.append({"from": dep_rule, "to": r["name"]})
-                    adj[dep_rule].add(r["name"])
-                    rev_adj[r["name"]].add(dep_rule)
-
-    # Identify roots (no incoming edges) and leaves (no outgoing edges)
-    roots = [name for name in rule_names if not rev_adj.get(name)]
-    leaves = [name for name in rule_names if not adj.get(name)]
-
-    nodes = [
-        {
-            "name": r["name"],
-            "input_count": len(r.get("input", {})),
-            "output_count": len(r.get("output", {})),
-        }
-        for r in all_rules
-    ]
-
-    result: dict[str, Any] = {
+    return {
         "pipe": entry.pipe,
         "flow": entry.name,
-        "nodes": nodes,
-        "edges": edges,
-        "roots": sorted(roots),
-        "leaves": sorted(leaves),
-        "rule_count": len(all_rules),
-        "edge_count": len(edges),
+        "graph_type": graph_type,
+        "format": "json" if graph_type == "d3dag" else output_format,
+        "output": graph_output,
     }
 
-    # If target specified, compute reachable subgraph (ancestors)
-    if target:
-        if target not in rule_names:
-            return {"error": f"Rule {target!r} not found"}
-        reachable: set[str] = set()
-        stack = [target]
-        while stack:
-            node = stack.pop()
-            if node in reachable:
-                continue
-            reachable.add(node)
-            for dep in rev_adj.get(node, set()):
-                stack.append(dep)
-        result["target"] = target
-        result["nodes"] = [n for n in nodes if n["name"] in reachable]
-        result["edges"] = [e for e in edges if e["from"] in reachable and e["to"] in reachable]
 
-    return result
+def mcp_report(
+    root: Path,
+    pipe: str,
+    flow: str | None = None,
+    output_path: str = "",
+    target: str = "",
+    snakemake_cmd: list[str] | None = None,
+) -> dict[str, Any]:
+    """Generate a snakemake HTML report for a flow.
+
+    Uses ``snakemake --report`` to produce a self-contained HTML report
+    with runtime statistics, provenance, and annotated outputs.
+
+    When ``target`` is specified (e.g. ``"report"``), snakemake runs that
+    target rule first, which is useful for flows that define a ``rule report``
+    filtering to existing outputs only.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name (optional for single-flow pipes).
+        output_path: Where to write the report (relative to root).
+            Defaults to ``derivatives/{pipe}/report.html``.
+        target: Target rule to run before generating the report (e.g.
+            ``"report"``). If empty, ``--report`` runs against existing
+            metadata only.
+        snakemake_cmd: Command tokens to invoke snakemake.
+    """
+    import subprocess
+
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    snakefile = flow_dir / "Snakefile"
+    if not snakefile.exists():
+        return {"error": f"No Snakefile in {flow_dir.relative_to(root)}"}
+
+    snake_base = snakemake_cmd or ["snakemake"]
+
+    # Determine output path
+    if not output_path:
+        output_path = f"derivatives/{entry.pipe}/report.html"
+    report_abs = root / output_path
+    report_abs.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build command
+    cmd = [
+        *snake_base,
+        "--snakefile", str(snakefile),
+        "--directory", str(flow_dir),
+        "--report", str(report_abs),
+    ]
+    if target:
+        cmd.append(target)
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=str(root),
+            timeout=300, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "Snakemake report generation timed out (5min)"}
+
+    if result.returncode != 0:
+        return {"error": f"Snakemake report failed: {result.stderr[:1000]}"}
+
+    return {
+        "pipe": entry.pipe,
+        "flow": entry.name,
+        "report_path": output_path,
+        "exists": report_abs.exists(),
+        "size_kb": round(report_abs.stat().st_size / 1024, 1) if report_abs.exists() else 0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2825,6 +2917,149 @@ def mcp_completion(
         "flow": entry.name,
         "output_dir": cfg.output_dir,
         "groups": group_results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCP tools: target path resolution
+# ---------------------------------------------------------------------------
+
+
+def mcp_target_paths(
+    root: Path,
+    pipe: str,
+    flow: str | None = None,
+    group: str = "",
+    member: str = "",
+    entities: dict[str, str] | None = None,
+    expand: bool = False,
+) -> dict[str, Any]:
+    """Resolve output paths for a flow's registry entries.
+
+    Uses the ``PipelineContext`` / ``PathResolver`` to translate
+    (group, member, entities) tuples into concrete filesystem paths —
+    the same paths snakemake would target.
+
+    **Modes:**
+
+    - *resolve* (default): given group + member + entities, returns the
+      single resolved path and whether it exists on disk.
+    - *expand* (``expand=True``): glob the filesystem for all matching
+      paths, optionally filtered by entities (e.g. ``sub=01``).
+    - *list groups* (no group/member): returns available groups and
+      members from the output registry so you know what to ask for.
+
+    Args:
+        root: Project root.
+        pipe: Pipeline name.
+        flow: Flow name (optional for single-flow pipes).
+        group: Registry group name (e.g. ``preproc``, ``spectral``).
+        member: Registry member name (e.g. ``cleaned``, ``psd``).
+        entities: Wildcard entities for path resolution
+            (e.g. ``{"sub": "01", "ses": "04"}``).
+        expand: If True, enumerate all matching paths on disk instead
+            of resolving a single path.
+    """
+    from pipeio.resolver import PipelineContext
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    from pipeio.registry import PipelineRegistry
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(pipe, flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    try:
+        ctx = PipelineContext.from_registry(
+            pipe, flow, root=root, registry=registry,
+        )
+    except (FileNotFoundError, Exception) as exc:
+        return {"error": str(exc)}
+
+    # -- List mode: no group specified → show available groups/members --
+    if not group:
+        groups_info = {}
+        for g in ctx.groups():
+            members = ctx.products(g)
+            pattern = {m: ctx.pattern(g, m) for m in members}
+            groups_info[g] = {"members": members, "patterns": pattern}
+        return {
+            "pipe": entry.pipe,
+            "flow": entry.name,
+            "mode": "list",
+            "groups": groups_info,
+        }
+
+    # -- Expand mode: glob for all matching paths on disk --
+    if expand:
+        ent = entities or {}
+        if member:
+            # Expand a single member
+            paths = ctx.expand(group, member, **ent)
+            return {
+                "pipe": entry.pipe,
+                "flow": entry.name,
+                "mode": "expand",
+                "group": group,
+                "member": member,
+                "entities_filter": ent,
+                "paths": [str(p) for p in paths],
+                "count": len(paths),
+            }
+        else:
+            # Expand all members in the group
+            all_results: dict[str, Any] = {}
+            for m in ctx.products(group):
+                paths = ctx.expand(group, m, **ent)
+                all_results[m] = {
+                    "paths": [str(p) for p in paths],
+                    "count": len(paths),
+                }
+            return {
+                "pipe": entry.pipe,
+                "flow": entry.name,
+                "mode": "expand",
+                "group": group,
+                "entities_filter": ent,
+                "members": all_results,
+            }
+
+    # -- Resolve mode: single path from group + member + entities --
+    if not member:
+        return {"error": "member is required for resolve mode (or use expand=True)"}
+
+    ent = entities or {}
+    if not ent:
+        # No entities: show the pattern template instead
+        pattern = ctx.pattern(group, member)
+        return {
+            "pipe": entry.pipe,
+            "flow": entry.name,
+            "mode": "pattern",
+            "group": group,
+            "member": member,
+            "pattern": pattern,
+        }
+
+    try:
+        path = ctx.path(group, member, **ent)
+    except KeyError as exc:
+        return {"error": str(exc)}
+
+    return {
+        "pipe": entry.pipe,
+        "flow": entry.name,
+        "mode": "resolve",
+        "group": group,
+        "member": member,
+        "entities": ent,
+        "path": str(path),
+        "exists": path.exists(),
     }
 
 
@@ -3152,6 +3387,8 @@ def mcp_run(
     cores: int = 1,
     dryrun: bool = False,
     extra_args: list[str] | None = None,
+    snakemake_cmd: list[str] | None = None,
+    wildcards: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Launch Snakemake in a detached screen session.
 
@@ -3165,6 +3402,12 @@ def mcp_run(
         cores: Number of cores (default 1).
         dryrun: If True, pass ``-n`` for a dry run.
         extra_args: Additional Snakemake CLI arguments.
+        snakemake_cmd: Command tokens to invoke snakemake (e.g.
+            ``["conda", "run", "-n", "cogpy", "snakemake"]``).
+            Defaults to ``["snakemake"]``.
+        wildcards: Entity filters for scoping runs (e.g.
+            ``{"subject": "01", "session": "04"}``).  Maps to
+            snakebids ``--filter-{key} {value}`` CLI flags.
     """
     import json
     import shutil
@@ -3203,20 +3446,32 @@ def mcp_run(
     log_path = log_dir / f"run-{timestamp}-{run_id}.log"
 
     # Build Snakemake command
-    snake_cmd = ["snakemake", "--snakefile", str(snakefile), "--cores", str(cores)]
+    snake_base = snakemake_cmd or ["snakemake"]
+    snake_cmd = [
+        *snake_base,
+        "--snakefile", str(snakefile),
+        "--directory", str(flow_dir),
+        "--cores", str(cores),
+    ]
     if dryrun:
         snake_cmd.append("-n")
     if targets:
         snake_cmd.extend(targets)
+    if wildcards:
+        for key, value in wildcards.items():
+            snake_cmd.extend([f"--filter-{key}", str(value)])
     if extra_args:
         snake_cmd.extend(extra_args)
 
     screen_name = f"pipeio-{entry.pipe}-{entry.name}-{run_id}"
+    # Use stdbuf to force line-buffered stdout so log is visible during
+    # long-running steps (e.g. BIDS indexing under conda run).
+    stdbuf_prefix = "stdbuf -oL " if shutil.which("stdbuf") else ""
     # Run via screen, logging output
     full_cmd = [
         "screen", "-dmS", screen_name,
         "bash", "-c",
-        f"{' '.join(snake_cmd)} 2>&1 | tee {log_path}; echo EXIT_CODE=$? >> {log_path}",
+        f"{stdbuf_prefix}{' '.join(snake_cmd)} 2>&1 | tee {log_path}; echo EXIT_CODE=$? >> {log_path}",
     ]
 
     try:
@@ -3307,6 +3562,7 @@ def mcp_run_status(
         if log_path.exists():
             try:
                 text = log_path.read_text(encoding="utf-8", errors="replace")
+                info["log_bytes"] = len(text)
                 tail = text[-2000:]
 
                 # Check for exit code
@@ -3331,6 +3587,27 @@ def mcp_run_status(
                     errors = error_re.findall(tail)
                     if errors:
                         info["failed_rules"] = errors
+
+                # If log is empty/tiny and screen is alive, check
+                # snakemake's own log directory for progress hints
+                if len(text) < 100 and info.get("screen_alive"):
+                    info["hint"] = (
+                        "Log is empty — likely in BIDS indexing or conda "
+                        "environment setup. Check .snakemake/log/ for "
+                        "snakemake's internal logs."
+                    )
+                    # Try to find snakemake's latest internal log
+                    flow_log_dir = log_path.parent
+                    sm_logs = sorted(flow_log_dir.glob("*.snakemake.log"))
+                    if sm_logs:
+                        latest = sm_logs[-1]
+                        try:
+                            sm_tail = latest.read_text(
+                                encoding="utf-8", errors="replace"
+                            )[-1000:]
+                            info["snakemake_log_tail"] = sm_tail
+                        except Exception:
+                            pass
 
             except Exception:
                 pass

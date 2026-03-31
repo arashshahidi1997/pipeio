@@ -115,9 +115,11 @@ Tools exposed via projio's MCP server (35 tools across 7 categories):
 
 **Config authoring:** `pipeio_config_read`, `pipeio_config_patch`, `pipeio_config_init`
 
+**Path resolution:** `pipeio_target_paths`
+
 **Contracts & tracking:** `pipeio_contracts_validate`, `pipeio_cross_flow`, `pipeio_completion`
 
-**Adapters** *(thin wrappers, may migrate to datalad run)*: `pipeio_dag`, `pipeio_log_parse`, `pipeio_config_init`
+**Adapters** *(thin wrappers, may migrate to datalad run)*: `pipeio_dag_export`, `pipeio_log_parse`, `pipeio_config_init`
 
 **Deprecated** *(to be replaced by datalad run)*: `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`
 

@@ -1,8 +1,8 @@
 # Pipeio
 
-**Pipeline registry, notebook lifecycle, and flow management for research repositories.**
+**Agent-facing authoring and discovery layer for computational pipelines in research repositories.**
 
-Pipeio manages computational pipeline workflows organized in a **pipe / flow / mod** hierarchy. It provides a registry for discovering and validating flows, a path resolution protocol for locating pipeline outputs, and notebook lifecycle automation.
+Pipeio makes pipeline knowledge — registry, configs, rules, contracts, notebooks — queryable and actionable for AI agents. It does not compete with execution engines (Snakemake), provenance systems (DataLad), app lifecycle managers (snakebids), or path resolvers (snakebids `bids()`). Each **flow** is a self-contained snakebids app producing one derivative directory.
 
 ## Start here
 

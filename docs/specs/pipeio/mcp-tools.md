@@ -387,14 +387,6 @@ pipeio_completion(pipe: str, flow: str = "", mod: str = "") → dict
 
 These wrap external tool output in pipeio's structured format. They may become thinner or be replaced by direct tool calls.
 
-#### `pipeio_dag`
-
-Rule dependency graph via static Snakefile analysis. Optionally filter to ancestors of a target rule.
-
-```
-pipeio_dag(pipe: str, flow: str = "", target: str = "") → dict
-```
-
 #### `pipeio_log_parse`
 
 Parse Snakemake log files for completed/failed rules, timing, and error summaries.
