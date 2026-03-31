@@ -233,6 +233,7 @@ def nb_sync_one(
     direction: str = "py2nb",
     formats: list[str] | None = None,
     force: bool = False,
+    kernel: str = "",
     python_bin: str | None = None,
 ) -> dict[str, Any]:
     """Sync a single notebook, optionally in either direction.
@@ -249,6 +250,9 @@ def nb_sync_one(
         Only used for ``py2nb`` direction.
     force : bool
         If False (default), skip files that are already up-to-date (mtime check).
+    kernel : str
+        Jupyter kernel name to embed in the ``.ipynb`` (e.g. ``"cogpy"``).
+        Passed as ``--set-kernel`` to jupytext.  Empty string = no override.
     python_bin : str | None
         Python binary where jupytext is installed (optional).
 
@@ -265,7 +269,7 @@ def nb_sync_one(
     if direction == "nb2py":
         return _sync_nb2py(py_path, force=force, python_bin=python_bin)
     elif direction == "py2nb":
-        return _sync_py2nb(py_path, formats=formats, force=force, python_bin=python_bin)
+        return _sync_py2nb(py_path, formats=formats, force=force, kernel=kernel, python_bin=python_bin)
     else:
         return {"error": f"Unknown direction: {direction!r}. Use 'py2nb' or 'nb2py'."}
 
@@ -275,6 +279,7 @@ def _sync_py2nb(
     *,
     formats: list[str],
     force: bool = False,
+    kernel: str = "",
     python_bin: str | None = None,
 ) -> dict[str, Any]:
     """Sync .py → .ipynb / .myst."""
@@ -283,11 +288,13 @@ def _sync_py2nb(
 
     py_mtime = py_path.stat().st_mtime
     generated: list[str] = []
+    kernel_args: tuple[str, ...] = ("--set-kernel", kernel) if kernel else ()
 
     if "ipynb" in formats:
         ipynb_path = py_path.with_suffix(".ipynb")
         if force or not ipynb_path.exists() or ipynb_path.stat().st_mtime < py_mtime:
-            _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path), python_bin=python_bin)
+            _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path),
+                       *kernel_args, python_bin=python_bin)
             generated.append(str(ipynb_path))
 
     if "myst" in formats:
@@ -302,6 +309,7 @@ def _sync_py2nb(
         "direction": "py2nb",
         "source": str(py_path),
         "generated": generated,
+        **({"kernel": kernel} if kernel else {}),
     }
 
 
@@ -472,12 +480,13 @@ def nb_lab(
 
             py_path = flow_root / entry.path
             ipynb_path = py_path.with_suffix(".ipynb")
+            kernel = cfg.resolve_kernel(entry)
 
-            # Optionally sync first
+            # Optionally sync first (with kernel embedded)
             if sync and py_path.exists():
                 result = nb_sync_one(
                     py_path, direction="py2nb", formats=["ipynb"],
-                    force=False, python_bin=python_bin,
+                    force=False, kernel=kernel, python_bin=python_bin,
                 )
                 if result.get("synced"):
                     synced.append(str(ipynb_path))
@@ -491,8 +500,6 @@ def nb_lab(
             link_path = link_dir / ipynb_path.name
 
             # Compute relative target from link location to real file
-            target = Path.cwd() if not ipynb_path.is_absolute() else ipynb_path
-            target = ipynb_path
             try:
                 rel_target = Path(*(['..'] * len(link_path.parent.relative_to(lab_dir).parts)),
                                   ipynb_path.relative_to(root))
@@ -503,13 +510,16 @@ def nb_lab(
                 link_path.unlink()
             link_path.symlink_to(rel_target)
 
-            linked.append({
+            item: dict[str, str] = {
                 "name": py_path.stem,
                 "pipe": entry_pipe,
                 "flow": entry_flow,
                 "link": str(link_path.relative_to(lab_dir)),
                 "target": str(ipynb_path),
-            })
+            }
+            if kernel:
+                item["kernel"] = kernel
+            linked.append(item)
 
     # Clean stale symlinks
     stale: list[str] = []

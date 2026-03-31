@@ -15,6 +15,7 @@ class NotebookEntry(BaseModel):
     kind: str = ""
     description: str = ""
     status: str = "active"
+    kernel: str = ""
     pair_ipynb: bool = False
     pair_myst: bool = False
     publish_myst: bool = False
@@ -37,8 +38,13 @@ class PublishConfig(BaseModel):
 class NotebookConfig(BaseModel):
     """Schema for a flow's ``notebook.yml``."""
 
+    kernel: str = ""
     publish: PublishConfig = Field(default_factory=PublishConfig)
     entries: list[NotebookEntry] = Field(default_factory=list)
+
+    def resolve_kernel(self, entry: NotebookEntry) -> str:
+        """Return the effective kernel for *entry*: entry-level > flow-level."""
+        return entry.kernel or self.kernel
 
     @classmethod
     def from_yaml(cls, path: Path) -> NotebookConfig:

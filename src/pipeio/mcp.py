@@ -150,6 +150,9 @@ def mcp_nb_status(
             if nb.description:
                 info["description"] = nb.description
             info["status"] = nb.status
+            kernel = nb_cfg.resolve_kernel(nb)
+            if kernel:
+                info["kernel"] = kernel
 
             # Check py file exists and get mtime
             py_path = nb_path if nb_path.suffix == ".py" else nb_path.with_suffix(".py")
@@ -923,11 +926,26 @@ def mcp_nb_sync(
     except ImportError as exc:
         return {"error": str(exc)}
 
+    # Resolve kernel from notebook.yml (entry-level > flow-level)
+    kernel = ""
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            from pipeio.notebook.config import NotebookConfig
+            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+            for nb in nb_cfg.entries:
+                if Path(nb.path).stem == name:
+                    kernel = nb_cfg.resolve_kernel(nb)
+                    break
+        except Exception:
+            pass
+
     result = nb_sync_one(
         py_path,
         direction=direction,
         formats=formats,
         force=force,
+        kernel=kernel,
         python_bin=python_bin,
     )
 
@@ -2636,12 +2654,27 @@ def mcp_nb_exec(
 
     ipynb_path = py_path.with_suffix(".ipynb")
 
-    # Sync py → ipynb first
+    # Resolve kernel from notebook.yml
+    kernel = ""
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            from pipeio.notebook.config import NotebookConfig
+            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+            for nb in nb_cfg.entries:
+                if Path(nb.path).stem == name:
+                    kernel = nb_cfg.resolve_kernel(nb)
+                    break
+        except Exception:
+            pass
+
+    # Sync py → ipynb first (with kernel if configured)
     try:
         from pipeio.notebook.lifecycle import _require_jupytext, _jupytext
         _require_jupytext(python_bin=python_bin)
+        kernel_args: tuple[str, ...] = ("--set-kernel", kernel) if kernel else ()
         _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path),
-                  python_bin=python_bin)
+                  *kernel_args, python_bin=python_bin)
     except (ImportError, Exception) as exc:
         return {"error": f"Sync failed: {exc}"}
 
@@ -2650,6 +2683,8 @@ def mcp_nb_exec(
     python = python_bin or "python"
     cmd = [python, "-m", "papermill", str(ipynb_path), str(output_path),
            "--cwd", str(flow_dir)]
+    if kernel:
+        cmd.extend(["-k", kernel])
 
     if params:
         import json
