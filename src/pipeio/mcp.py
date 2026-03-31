@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 def _find_registry(root: Path) -> Path | None:
     """Locate the pipeline registry, checking .projio/pipeio/ first."""
@@ -120,13 +122,27 @@ def mcp_flow_deregister(
 
     registry.to_yaml(registry_path)
 
+    # Persist to ignore list so rescan doesn't re-register
+    ignore_path = registry_path.parent / "registry_ignore.yml"
+    ignored: list[str] = []
+    if ignore_path.exists():
+        raw = yaml.safe_load(ignore_path.read_text(encoding="utf-8")) or {}
+        ignored = raw.get("ignore", [])
+    flow_key = f"{removed.pipe}/{removed.name}"
+    if flow_key not in ignored:
+        ignored.append(flow_key)
+        ignore_path.write_text(
+            yaml.safe_dump({"ignore": ignored}, default_flow_style=False),
+            encoding="utf-8",
+        )
+
     return {
         "deregistered": True,
         "pipe": removed.pipe,
         "flow": removed.name,
         "code_path": removed.code_path,
         "mods": list(removed.mods.keys()) if removed.mods else [],
-        "note": "Registry entry removed. Code and docs are untouched on disk.",
+        "note": "Registry entry removed. Added to registry_ignore.yml so rescan skips it.",
     }
 
 

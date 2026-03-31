@@ -144,11 +144,17 @@ class PipelineRegistry(BaseModel):
         cls,
         pipelines_dir: Path,
         docs_dir: Path | None = None,
+        ignore: set[str] | None = None,
     ) -> PipelineRegistry:
         """Discover flows from the filesystem and return a new registry.
 
         Scans *pipelines_dir* for pipe/flow directories containing Snakefile
         or config.yml. Optionally cross-references *docs_dir* for doc paths.
+
+        Parameters
+        ----------
+        ignore : set[str] | None
+            Flow keys (``"pipe/flow"``) to skip during scan.
         """
         flows: dict[str, FlowEntry] = {}
 
@@ -161,6 +167,8 @@ class PipelineRegistry(BaseModel):
         ):
             pipe = pipe_dir.name
             discovered = _discover_flows(pipe_dir, pipe, docs_dir)
+            if ignore:
+                discovered = {k: v for k, v in discovered.items() if k not in ignore}
             flows.update(discovered)
 
         return cls(flows=flows)

@@ -522,7 +522,17 @@ def _cmd_registry_scan(args: argparse.Namespace) -> int:
     if (root / "docs" / "explanation" / "pipelines").exists():
         docs_dir = root / "docs" / "explanation" / "pipelines"
 
-    registry = PipelineRegistry.scan(pipelines_dir, docs_dir=docs_dir)
+    # Load ignore list
+    ignore: set[str] = set()
+    ignore_path = _pipeio_dir(root) / "registry_ignore.yml"
+    if ignore_path.exists():
+        import yaml
+        raw = yaml.safe_load(ignore_path.read_text(encoding="utf-8")) or {}
+        ignore = set(raw.get("ignore", []))
+        if ignore:
+            print(f"Ignoring {len(ignore)} deregistered flow(s): {', '.join(sorted(ignore))}")
+
+    registry = PipelineRegistry.scan(pipelines_dir, docs_dir=docs_dir, ignore=ignore)
 
     # Print summary
     pipes = registry.list_pipes()
