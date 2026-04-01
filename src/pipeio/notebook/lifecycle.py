@@ -133,8 +133,13 @@ def nb_scan(root: Path, *, register: bool = False) -> list[dict[str, Any]]:
             }
 
             if not is_registered and register:
+                # Prefer .src/ layout for new registrations
+                if ".src" not in rel_path:
+                    src_rel = rel_path.replace("notebooks/", "notebooks/.src/", 1)
+                else:
+                    src_rel = rel_path
                 new_entry = NotebookEntry(
-                    path=rel_path,
+                    path=src_rel if ".src" in src_rel else rel_path,
                     status="draft",
                     pair_ipynb=True,
                     pair_myst=True,
@@ -168,8 +173,9 @@ def nb_status(root: Path) -> list[dict[str, Any]]:
     for flow_root, cfg in find_notebook_configs(root):
         for entry in cfg.entries:
             py_path = flow_root / entry.path
-            ipynb_path = py_path.with_suffix(".ipynb") if entry.pair_ipynb else None
-            myst_path = py_path.with_suffix(".md") if entry.pair_myst else None
+            _ipynb, _myst = _nb_output_paths(py_path)
+            ipynb_path = _ipynb if entry.pair_ipynb else None
+            myst_path = _myst if entry.pair_myst else None
 
             synced = True
             if py_path.exists():
@@ -225,14 +231,15 @@ def nb_pair(root: Path, *, force: bool = False) -> list[str]:
             if not py_path.exists():
                 continue
 
+            ipynb_path, myst_path = _nb_output_paths(py_path)
+
             if entry.pair_ipynb:
-                ipynb_path = py_path.with_suffix(".ipynb")
                 if force or not ipynb_path.exists():
                     _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path))
                     created.append(str(ipynb_path))
 
             if entry.pair_myst:
-                myst_path = py_path.with_suffix(".md")
+                myst_path.parent.mkdir(parents=True, exist_ok=True)
                 if force or not myst_path.exists():
                     _jupytext(py_path, "--to", "myst", "--output", str(myst_path))
                     created.append(str(myst_path))
@@ -259,14 +266,15 @@ def nb_sync(root: Path) -> list[str]:
                 continue
             py_mtime = py_path.stat().st_mtime
 
+            ipynb_path, myst_path = _nb_output_paths(py_path)
+
             if entry.pair_ipynb:
-                ipynb_path = py_path.with_suffix(".ipynb")
                 if ipynb_path.exists() and ipynb_path.stat().st_mtime < py_mtime:
                     _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path))
                     updated.append(str(ipynb_path))
 
             if entry.pair_myst:
-                myst_path = py_path.with_suffix(".md")
+                myst_path.parent.mkdir(parents=True, exist_ok=True)
                 if myst_path.exists() and myst_path.stat().st_mtime < py_mtime:
                     _jupytext(py_path, "--to", "myst", "--output", str(myst_path))
                     updated.append(str(myst_path))
@@ -291,7 +299,7 @@ def nb_exec(root: Path) -> list[str]:
             if not entry.pair_ipynb:
                 continue
             py_path = flow_root / entry.path
-            ipynb_path = py_path.with_suffix(".ipynb")
+            ipynb_path, _ = _nb_output_paths(py_path)
             if not ipynb_path.exists():
                 continue
             _nbconvert_exec(ipynb_path)
@@ -323,10 +331,10 @@ def nb_publish(root: Path) -> list[str]:
         for entry in cfg.entries:
             py_path = flow_root / entry.path
             name = py_path.stem
+            ipynb_path, myst_path = _nb_output_paths(py_path)
 
             if entry.publish_html:
                 _require_nbconvert()
-                ipynb_path = py_path.with_suffix(".ipynb")
                 if ipynb_path.exists():
                     out = docs_dir / f"{cfg.publish.prefix}{name}.html"
                     _nbconvert_html(ipynb_path, out)
@@ -334,7 +342,6 @@ def nb_publish(root: Path) -> list[str]:
 
             if entry.publish_myst:
                 _require_jupytext()
-                myst_path = py_path.with_suffix(".md")
                 if myst_path.exists():
                     out = docs_dir / f"{cfg.publish.prefix}{name}.md"
                     shutil.copy2(myst_path, out)
@@ -394,6 +401,25 @@ def nb_sync_one(
         return {"error": f"Unknown direction: {direction!r}. Use 'py2nb' or 'nb2py'."}
 
 
+def _nb_output_paths(py_path: Path) -> tuple[Path, Path]:
+    """Compute ipynb and myst output paths from a .py source path.
+
+    Layout-aware: if ``.py`` is in a ``.src/`` directory, ``.ipynb`` goes
+    to the parent ``notebooks/`` dir and ``.md`` goes to ``.myst/``.
+    Otherwise, outputs are siblings of the ``.py`` file.
+    """
+    name = py_path.stem
+    if py_path.parent.name == ".src":
+        nb_dir = py_path.parent.parent  # notebooks/
+        ipynb_path = nb_dir / f"{name}.ipynb"
+        myst_dir = nb_dir / ".myst"
+        myst_path = myst_dir / f"{name}.md"
+    else:
+        ipynb_path = py_path.with_suffix(".ipynb")
+        myst_path = py_path.with_suffix(".md")
+    return ipynb_path, myst_path
+
+
 def _sync_py2nb(
     py_path: Path,
     *,
@@ -409,16 +435,16 @@ def _sync_py2nb(
     py_mtime = py_path.stat().st_mtime
     generated: list[str] = []
     kernel_args: tuple[str, ...] = ("--set-kernel", kernel) if kernel else ()
+    ipynb_path, myst_path = _nb_output_paths(py_path)
 
     if "ipynb" in formats:
-        ipynb_path = py_path.with_suffix(".ipynb")
         if force or not ipynb_path.exists() or ipynb_path.stat().st_mtime < py_mtime:
             _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path),
                        *kernel_args, python_bin=python_bin)
             generated.append(str(ipynb_path))
 
     if "myst" in formats:
-        myst_path = py_path.with_suffix(".md")
+        myst_path.parent.mkdir(parents=True, exist_ok=True)
         if force or not myst_path.exists() or myst_path.stat().st_mtime < py_mtime:
             _jupytext(py_path, "--to", "myst", "--output", str(myst_path), python_bin=python_bin)
             generated.append(str(myst_path))
@@ -440,7 +466,7 @@ def _sync_nb2py(
     python_bin: str | None = None,
 ) -> dict[str, Any]:
     """Sync .ipynb → .py (reverse sync for human edits)."""
-    ipynb_path = py_path.with_suffix(".ipynb")
+    ipynb_path, _ = _nb_output_paths(py_path)
     if not ipynb_path.exists():
         return {"error": f"Paired notebook not found: {ipynb_path}"}
 
@@ -454,6 +480,7 @@ def _sync_nb2py(
                 "reason": ".py is already newer than .ipynb",
             }
 
+    py_path.parent.mkdir(parents=True, exist_ok=True)
     _jupytext(ipynb_path, "--to", "py:percent", "--output", str(py_path), python_bin=python_bin)
 
     return {
@@ -475,7 +502,7 @@ def nb_diff(py_path: Path) -> dict[str, Any]:
     Returns a dict describing which file is newer, whether they're in sync,
     and the recommended sync direction.
     """
-    ipynb_path = py_path.with_suffix(".ipynb")
+    ipynb_path, _ = _nb_output_paths(py_path)
 
     result: dict[str, Any] = {
         "py_path": str(py_path),
@@ -727,6 +754,96 @@ def nb_audit(root: Path, registered_only: bool = True) -> list[dict[str, Any]]:
     return records
 
 
+def nb_migrate(root: Path, *, dry_run: bool = True) -> list[dict[str, Any]]:
+    """Migrate notebooks from legacy layouts to the ``.src/`` / ``.myst/`` layout.
+
+    Moves ``.py`` files into ``notebooks/.src/`` and ``.md`` files into
+    ``notebooks/.myst/``.  ``.ipynb`` files stay in ``notebooks/``.
+    Updates ``notebook.yml`` path entries.
+
+    Parameters
+    ----------
+    dry_run : bool
+        If True (default), only report what would change.  Pass False to execute.
+    """
+    from pipeio.notebook.config import NotebookConfig
+
+    actions: list[dict[str, Any]] = []
+
+    for flow_root, cfg in find_notebook_configs(root):
+        nb_dir = flow_root / "notebooks"
+        cfg_path = nb_dir / "notebook.yml"
+        cfg_modified = False
+
+        for entry in cfg.entries:
+            py_path = flow_root / entry.path
+
+            # Already in .src/ layout — skip
+            if ".src" in entry.path:
+                continue
+
+            name = py_path.stem
+            src_dir = nb_dir / ".src"
+            myst_dir = nb_dir / ".myst"
+            new_py = src_dir / f"{name}.py"
+            new_md = myst_dir / f"{name}.md"
+            new_ipynb = nb_dir / f"{name}.ipynb"
+
+            action: dict[str, Any] = {
+                "name": name,
+                "flow_root": str(flow_root),
+                "moves": [],
+            }
+
+            # Find the current .py file (could be flat or in subdir)
+            if py_path.exists():
+                action["moves"].append({"from": str(py_path), "to": str(new_py)})
+            elif (nb_dir / name / f"{name}.py").exists():
+                py_path = nb_dir / name / f"{name}.py"
+                action["moves"].append({"from": str(py_path), "to": str(new_py)})
+
+            # Find paired .md
+            old_md = py_path.with_suffix(".md") if py_path.exists() else None
+            if old_md and old_md.exists():
+                action["moves"].append({"from": str(old_md), "to": str(new_md)})
+
+            # Find paired .ipynb — move to flat notebooks/ if in subdir
+            old_ipynb = py_path.with_suffix(".ipynb") if py_path.exists() else None
+            if old_ipynb and old_ipynb.exists() and old_ipynb.parent != nb_dir:
+                action["moves"].append({"from": str(old_ipynb), "to": str(new_ipynb)})
+
+            if not action["moves"]:
+                continue
+
+            # Update notebook.yml path
+            new_rel = f"notebooks/.src/{name}.py"
+            action["path_update"] = {"from": entry.path, "to": new_rel}
+
+            if not dry_run:
+                src_dir.mkdir(parents=True, exist_ok=True)
+                myst_dir.mkdir(parents=True, exist_ok=True)
+                for move in action["moves"]:
+                    src = Path(move["from"])
+                    dst = Path(move["to"])
+                    if src.exists():
+                        shutil.move(str(src), str(dst))
+
+                # Clean up empty subdirectory
+                old_subdir = nb_dir / name
+                if old_subdir.is_dir() and not any(old_subdir.iterdir()):
+                    old_subdir.rmdir()
+
+                entry.path = new_rel
+                cfg_modified = True
+
+            actions.append(action)
+
+        if cfg_modified:
+            cfg.to_yaml(cfg_path)
+
+    return actions
+
+
 def nb_lab(
     root: Path,
     *,
@@ -812,7 +929,7 @@ def nb_lab(
                 continue
 
             py_path = flow_root / entry.path
-            ipynb_path = py_path.with_suffix(".ipynb")
+            ipynb_path, _ = _nb_output_paths(py_path)
             kernel = cfg.resolve_kernel(entry)
 
             # Optionally sync first (with kernel embedded)

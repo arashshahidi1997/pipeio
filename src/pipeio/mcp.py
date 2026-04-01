@@ -30,16 +30,23 @@ _NO_REGISTRY = {"error": "No pipeline registry found", "hint": "Run pipeio init"
 def _resolve_nb_path(flow_dir: Path, name: str) -> Path | None:
     """Resolve a notebook name to its .py path.
 
-    Checks both flat (``notebooks/{name}.py``) and subdirectory
-    (``notebooks/{name}/{name}.py``) layouts, then falls back to
-    scanning ``notebook.yml`` entries by stem.
+    Checks layouts in priority order:
+    1. ``.src/`` layout: ``notebooks/.src/{name}.py`` (preferred)
+    2. Flat layout: ``notebooks/{name}.py``
+    3. Subdirectory layout: ``notebooks/{name}/{name}.py`` (legacy)
+    4. Fall back to ``notebook.yml`` entry matching
     """
+    # .src/ layout (preferred)
+    src = flow_dir / "notebooks" / ".src" / f"{name}.py"
+    if src.exists():
+        return src
+
     # Flat layout
     flat = flow_dir / "notebooks" / f"{name}.py"
     if flat.exists():
         return flat
 
-    # Subdirectory layout
+    # Subdirectory layout (legacy)
     subdir = flow_dir / "notebooks" / name / f"{name}.py"
     if subdir.exists():
         return subdir
@@ -973,9 +980,10 @@ def mcp_nb_create(
         flow_dir = root / flow_dir
 
     nb_dir = flow_dir / "notebooks"
-    nb_dir.mkdir(parents=True, exist_ok=True)
+    src_dir = nb_dir / ".src"
+    src_dir.mkdir(parents=True, exist_ok=True)
 
-    nb_path = nb_dir / f"{name}.py"
+    nb_path = src_dir / f"{name}.py"
     if nb_path.exists():
         return {"error": f"Notebook already exists: {nb_path.relative_to(root)}"}
 
@@ -1017,12 +1025,12 @@ def mcp_nb_create(
     if config_path_str:
         rel_cfg = Path(config_path_str)
         if not rel_cfg.is_absolute():
-            # Compute relative path from notebook dir to config
+            # Compute relative path from .src/ dir to config
             try:
                 rel = Path(config_path_str).resolve() if Path(
                     config_path_str
                 ).is_absolute() else (root / config_path_str).resolve()
-                rel_cfg = rel.relative_to(nb_dir.resolve())
+                rel_cfg = rel.relative_to(src_dir.resolve())
             except ValueError:
                 rel_cfg = Path(config_path_str)
         lines.append(f'config_path = Path("{rel_cfg}")')
@@ -1050,7 +1058,7 @@ def mcp_nb_create(
     else:
         nb_cfg = NotebookConfig()
 
-    rel_nb = f"notebooks/{name}.py"
+    rel_nb = f"notebooks/.src/{name}.py"
     existing_paths = {e.path for e in nb_cfg.entries}
     if rel_nb not in existing_paths:
         nb_cfg.entries.append(NotebookEntry(

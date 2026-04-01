@@ -610,6 +610,32 @@ def _cmd_nb_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_nb_migrate(args: argparse.Namespace) -> int:
+    from pipeio.notebook.lifecycle import nb_migrate
+
+    root = Path(args.root) if args.root else _find_root()
+    execute = getattr(args, "yes", False)
+
+    actions = nb_migrate(root, dry_run=not execute)
+    if not actions:
+        print("All notebooks already use .src/ layout (nothing to migrate).")
+        return 0
+
+    mode = "Migrated" if execute else "Would migrate"
+    print(f"{mode} {len(actions)} notebook(s):")
+    for a in actions:
+        print(f"\n  {a['name']} ({a['flow_root']})")
+        for m in a["moves"]:
+            print(f"    {m['from']}")
+            print(f"    → {m['to']}")
+        if "path_update" in a:
+            print(f"    notebook.yml: {a['path_update']['from']} → {a['path_update']['to']}")
+
+    if not execute:
+        print("\nDry run — pass --yes to execute.")
+    return 0
+
+
 def _cmd_nb_status(args: argparse.Namespace) -> int:
     from pipeio.notebook.lifecycle import nb_status
 
@@ -971,6 +997,9 @@ def main(argv: list[str] | None = None) -> int:
     nb_scan_p = nb_sub.add_parser("scan", help="Scan for unregistered notebooks")
     nb_scan_p.add_argument("--register", action="store_true", help="Auto-register found notebooks into notebook.yml")
 
+    nb_migrate_p = nb_sub.add_parser("migrate", help="Migrate notebooks to .src/.myst layout")
+    nb_migrate_p.add_argument("--yes", action="store_true", help="Execute migration (default: dry run)")
+
     nb_lab_p = nb_sub.add_parser("lab", help="Build symlink manifest and launch Jupyter Lab")
     nb_lab_p.add_argument("--pipe", help="Filter to a specific pipeline")
     nb_lab_p.add_argument("--flow", help="Filter to a specific flow")
@@ -1073,6 +1102,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_nb_lab(args)
         if args.nb_command == "scan":
             return _cmd_nb_scan(args)
+        if args.nb_command == "migrate":
+            return _cmd_nb_migrate(args)
         nb_p.print_help()
         return 0
 
