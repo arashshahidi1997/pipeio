@@ -487,20 +487,141 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
         print(f"Flow directory already exists: {flow_dir}", file=sys.stderr)
         return 1
 
+    pipe = args.pipe
+    flow = args.flow
+
+    # Create directory structure
     flow_dir.mkdir(parents=True)
+    (flow_dir / "scripts").mkdir()
+    (flow_dir / "docs").mkdir()
+    (flow_dir / "notebooks" / ".src").mkdir(parents=True)
+    (flow_dir / "notebooks" / ".myst").mkdir()
+
+    # config.yml
     (flow_dir / "config.yml").write_text(
-        f"# config for {args.pipe}/{args.flow}\n"
+        f"# config for {pipe}/{flow}\n"
         f"input_dir: \"\"\n"
         f"output_dir: \"\"\n"
         f"registry: {{}}\n",
         encoding="utf-8",
     )
+
+    # Snakefile
     (flow_dir / "Snakefile").write_text(
-        f"# Snakefile for {args.pipe}/{args.flow}\n",
+        f"# Snakefile for {pipe}/{flow}\n"
+        f"from pathlib import Path\n"
+        f"\n"
+        f"configfile: \"config.yml\"\n"
+        f"\n"
+        f"\n"
+        f"rule all:\n"
+        f"    input: []\n",
+        encoding="utf-8",
+    )
+
+    # Makefile (delegates to pipeio CLI)
+    (flow_dir / "Makefile").write_text(
+        f"# Flow: {pipe}/{flow}\n"
+        f"# Notebook and pipeline operations delegate to pipeio CLI.\n"
+        f"SHELL := /bin/bash\n"
+        f"\n"
+        f".PHONY: help nb-status nb-sync nb-lab nb-publish\n"
+        f"\n"
+        f"help:\n"
+        f"\t@echo \"Targets: nb-status nb-sync nb-lab nb-publish\"\n"
+        f"\n"
+        f"nb-status:\n"
+        f"\tpipeio nb status\n"
+        f"\n"
+        f"nb-sync:\n"
+        f"\tpipeio nb sync --direction py2nb\n"
+        f"\n"
+        f"nb-lab:\n"
+        f"\tpipeio nb lab\n"
+        f"\n"
+        f"nb-publish:\n"
+        f"\tpipeio nb sync --direction py2nb --force\n"
+        f"\tpipeio nb publish\n",
+        encoding="utf-8",
+    )
+
+    # notebook.yml (empty but valid)
+    (flow_dir / "notebooks" / "notebook.yml").write_text(
+        f"# Notebook config for {pipe}/{flow}\n"
+        f"kernel: \"\"\n"
+        f"publish:\n"
+        f"  docs_dir: \"\"\n"
+        f"  prefix: \"nb-\"\n"
+        f"entries: []\n",
+        encoding="utf-8",
+    )
+
+    # docs/index.md
+    (flow_dir / "docs" / "index.md").write_text(
+        f"# {flow}\n"
+        f"\n"
+        f"Pipeline: `{pipe}/{flow}`\n"
+        f"\n"
+        f"## Mods\n"
+        f"\n"
+        f"(none yet)\n",
+        encoding="utf-8",
+    )
+
+    # Starter notebook
+    nb_name = f"explore_{flow}"
+    nb_path = flow_dir / "notebooks" / ".src" / f"{nb_name}.py"
+    nb_path.write_text(
+        f"# ---\n"
+        f"# jupyter:\n"
+        f"#   jupytext:\n"
+        f"#     text_representation:\n"
+        f"#       format_name: percent\n"
+        f"# ---\n"
+        f"\n"
+        f"# %% [markdown]\n"
+        f"# # Explore {flow.replace('_', ' ').title()}\n"
+        f"#\n"
+        f"# Initial exploration notebook for {pipe}/{flow}.\n"
+        f"\n"
+        f"# %% [markdown]\n"
+        f"# ## Setup\n"
+        f"\n"
+        f"# %%\n"
+        f"from pathlib import Path\n"
+        f"\n"
+        f"# %% [markdown]\n"
+        f"# ## Analysis\n"
+        f"\n"
+        f"# %%\n",
+        encoding="utf-8",
+    )
+
+    # Register starter notebook in notebook.yml
+    import yaml
+    nb_cfg = {
+        "kernel": "",
+        "publish": {"docs_dir": "", "prefix": "nb-"},
+        "entries": [{
+            "path": f"notebooks/.src/{nb_name}.py",
+            "kind": "explore",
+            "description": f"Initial exploration for {pipe}/{flow}",
+            "status": "draft",
+            "pair_ipynb": True,
+            "pair_myst": True,
+        }],
+    }
+    (flow_dir / "notebooks" / "notebook.yml").write_text(
+        yaml.safe_dump(nb_cfg, sort_keys=False, default_flow_style=False),
         encoding="utf-8",
     )
 
     print(f"Created flow scaffold: {flow_dir}")
+    print(f"  Snakefile, config.yml, Makefile")
+    print(f"  scripts/")
+    print(f"  docs/index.md")
+    print(f"  notebooks/.src/{nb_name}.py (starter notebook)")
+    print(f"  notebooks/notebook.yml")
     return 0
 
 
