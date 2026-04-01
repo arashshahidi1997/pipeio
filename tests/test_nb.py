@@ -23,8 +23,7 @@ def _make_nb_config(
     pair_myst: bool = False,
     publish_html: bool = False,
     publish_myst: bool = False,
-    docs_dir: str = "",
-) -> None:
+    docs_dir: str = "") -> None:
     """Write a notebooks/notebook.yml under flow_root."""
     nb_dir = flow_root / "notebooks"
     nb_dir.mkdir(parents=True, exist_ok=True)
@@ -127,7 +126,7 @@ def test_nb_status_synced_not_executed(tmp_path):
     ipynb = _make_ipynb(tmp_path, with_outputs=False)
     # Make ipynb newer than py
     import os
-    os.utime(ipynb, (py.stat().st_mtime + 10,) * 2)
+    os.utime(ipynb, (py.stat().st_mtime + 10) * 2)
 
     statuses = nb_status(tmp_path)
     s = statuses[0]
@@ -140,7 +139,7 @@ def test_nb_status_executed(tmp_path):
     py = _make_py(tmp_path)
     ipynb = _make_ipynb(tmp_path, with_outputs=True)
     import os
-    os.utime(ipynb, (py.stat().st_mtime + 10,) * 2)
+    os.utime(ipynb, (py.stat().st_mtime + 10) * 2)
 
     statuses = nb_status(tmp_path)
     s = statuses[0]
@@ -234,7 +233,7 @@ def test_nb_sync_updates_stale(tmp_path):
 
     # Make ipynb older than py
     import os, time
-    os.utime(ipynb, (py.stat().st_mtime - 10,) * 2)
+    os.utime(ipynb, (py.stat().st_mtime - 10) * 2)
 
     calls = []
 
@@ -257,7 +256,7 @@ def test_nb_sync_skips_fresh(tmp_path):
     ipynb = _make_ipynb(tmp_path)
 
     import os
-    os.utime(ipynb, (py.stat().st_mtime + 10,) * 2)
+    os.utime(ipynb, (py.stat().st_mtime + 10) * 2)
 
     calls = []
     with patch("pipeio.notebook.lifecycle._require_jupytext"):

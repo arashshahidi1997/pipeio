@@ -108,7 +108,7 @@ def validate_flow_contracts(root: Path) -> list[FlowValidation]:
     results: list[FlowValidation] = []
 
     for entry in registry.list_flows():
-        fv = FlowValidation(flow_id=f"{entry.pipe}/{entry.name}")
+        fv = FlowValidation(flow_id=entry.name)
 
         if not entry.config_path:
             fv.warnings.append("No config_path in registry — skipping contract checks")

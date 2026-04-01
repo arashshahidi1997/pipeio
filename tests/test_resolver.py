@@ -19,18 +19,15 @@ def _sample_flow_config() -> FlowConfig:
                 bids={"root": "raw_zarr", "datatype": "ieeg"},
                 members={
                     "zarr": RegistryMember(suffix="ieeg", extension=".zarr"),
-                },
-            ),
+                }),
             "badlabel": RegistryGroup(
                 base_input="ieeg",
                 bids={"root": "badlabel", "datatype": "ieeg"},
                 members={
                     "npy": RegistryMember(suffix="ieeg", extension=".npy"),
                     "featuremap": RegistryMember(suffix="ieeg", extension=".featuremap.png"),
-                },
-            ),
-        },
-    )
+                }),
+        })
 
 
 # ---- SimpleResolver ----
@@ -183,7 +180,6 @@ class TestPipelineContext:
             "flows": {
                 "preprocess": {
                     "name": "preprocess",
-                    "pipe": "preprocess",
                     "code_path": "code/pipelines/preprocess",
                     "config_path": "code/pipelines/preprocess/config.yml",
                 },

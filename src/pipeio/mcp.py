@@ -68,7 +68,7 @@ def _resolve_nb_path(flow_dir: Path, name: str) -> Path | None:
     return None
 
 
-def mcp_flow_list(root: Path, pipe: str | None = None) -> dict[str, Any]:
+def mcp_flow_list(root: Path, prefix: str | None = None) -> dict[str, Any]:
     """List flows, optionally filtered by pipe."""
     from pipeio.registry import PipelineRegistry
 
@@ -76,11 +76,11 @@ def mcp_flow_list(root: Path, pipe: str | None = None) -> dict[str, Any]:
     if not registry_path:
         return _NO_REGISTRY
     registry = PipelineRegistry.from_yaml(registry_path)
-    flows = registry.list_flows(pipe=pipe)
+    flows = registry.list_flows(prefix=prefix)
     return {"flows": [f.model_dump() for f in flows]}
 
 
-def mcp_flow_status(root: Path, pipe: str, flow: str) -> dict[str, Any]:
+def mcp_flow_status(root: Path, flow: str) -> dict[str, Any]:
     """Show status of a specific flow."""
     from pipeio.config import FlowConfig
     from pipeio.registry import PipelineRegistry
@@ -91,12 +91,12 @@ def mcp_flow_status(root: Path, pipe: str, flow: str) -> dict[str, Any]:
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     result: dict[str, Any] = {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "code_path": entry.code_path,
         "app_type": entry.app_type,
@@ -136,7 +136,6 @@ def mcp_flow_status(root: Path, pipe: str, flow: str) -> dict[str, Any]:
 
 def mcp_flow_deregister(
     root: Path,
-    pipe: str,
     flow: str,
 ) -> dict[str, Any]:
     """Remove a flow from the pipeline registry.
@@ -146,7 +145,6 @@ def mcp_flow_deregister(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
     """
     from pipeio.registry import PipelineRegistry
@@ -157,7 +155,7 @@ def mcp_flow_deregister(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        removed = registry.remove(pipe, flow)
+        removed = registry.remove(flow)
     except KeyError as exc:
         return {"error": str(exc)}
 
@@ -169,7 +167,7 @@ def mcp_flow_deregister(
     if ignore_path.exists():
         raw = yaml.safe_load(ignore_path.read_text(encoding="utf-8")) or {}
         ignored = raw.get("ignore", [])
-    flow_key = f"{removed.pipe}/{removed.name}"
+    flow_key = removed.name
     if flow_key not in ignored:
         ignored.append(flow_key)
         ignore_path.write_text(
@@ -179,7 +177,7 @@ def mcp_flow_deregister(
 
     return {
         "deregistered": True,
-        "pipe": removed.pipe,
+        "flow": removed.name,
         "flow": removed.name,
         "code_path": removed.code_path,
         "mods": list(removed.mods.keys()) if removed.mods else [],
@@ -189,10 +187,8 @@ def mcp_flow_deregister(
 
 def mcp_flow_fork(
     root: Path,
-    pipe: str,
     flow: str,
     new_flow: str,
-    new_pipe: str | None = None,
 ) -> dict[str, Any]:
     """Fork a flow: copy its code directory and register as a new flow.
 
@@ -201,17 +197,12 @@ def mcp_flow_fork(
 
     Args:
         root: Project root.
-        pipe: Source pipeline name.
         flow: Source flow name.
         new_flow: Name for the forked flow.
-        new_pipe: Target pipe (default: same as source).
     """
     import shutil
 
     from pipeio.registry import FlowEntry, PipelineRegistry
-
-    if new_pipe is None:
-        new_pipe = pipe
 
     registry_path = _find_registry(root)
     if not registry_path:
@@ -221,14 +212,13 @@ def mcp_flow_fork(
 
     # Validate source exists
     try:
-        source = registry.get(pipe, flow)
+        source = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     # Check target doesn't conflict
-    target_key = f"{new_pipe}/{new_flow}"
-    if target_key in registry.flows:
-        return {"error": f"Flow already exists: {target_key}"}
+    if new_flow in registry.flows:
+        return {"error": f"Flow already exists: {new_flow}"}
 
     # Resolve source code directory
     src_dir = Path(source.code_path)
@@ -238,11 +228,8 @@ def mcp_flow_fork(
     if not src_dir.exists():
         return {"error": f"Source code directory not found: {src_dir}"}
 
-    # Compute target code directory (sibling of source, under new_pipe if changed)
-    if new_pipe == pipe:
-        dst_dir = src_dir.parent / new_flow
-    else:
-        dst_dir = src_dir.parent.parent / new_pipe / new_flow
+    # Target is a sibling directory
+    dst_dir = src_dir.parent / new_flow
 
     if dst_dir.exists():
         return {"error": f"Target directory already exists: {dst_dir}"}
@@ -264,13 +251,10 @@ def mcp_flow_fork(
 
     new_doc_path = None
     if source.doc_path:
-        new_doc_path = source.doc_path.replace(
-            f"{pipe}/{flow}", f"{new_pipe}/{new_flow}"
-        )
+        new_doc_path = source.doc_path.replace(flow, new_flow)
 
     new_entry = FlowEntry(
         name=new_flow,
-        pipe=new_pipe,
         code_path=new_code_path,
         config_path=new_config_path,
         doc_path=new_doc_path,
@@ -283,7 +267,7 @@ def mcp_flow_fork(
 
     return {
         "forked": True,
-        "source": f"{pipe}/{flow}",
+        "source": f"{flow}",
         "target": target_key,
         "code_path": new_code_path,
         "mods": list(new_entry.mods.keys()) if new_entry.mods else [],
@@ -292,7 +276,6 @@ def mcp_flow_fork(
 
 def mcp_nb_status(
     root: Path,
-    pipe: str | None = None,
     flow: str | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
@@ -300,7 +283,6 @@ def mcp_nb_status(
 
     Args:
         root: Project root.
-        pipe: Filter to a specific pipeline (optional).
         flow: Filter to a specific flow (optional).
         name: Filter to a specific notebook name (optional).
     """
@@ -314,9 +296,7 @@ def mcp_nb_status(
     flow_statuses: list[dict[str, Any]] = []
 
     for entry in registry.list_flows():
-        # Apply pipe/flow filters
-        if pipe and entry.pipe != pipe:
-            continue
+        # Apply flow/name filters
         if flow and entry.name != flow:
             continue
 
@@ -376,7 +356,7 @@ def mcp_nb_status(
 
         if notebooks:
             flow_statuses.append({
-                "flow": f"{entry.pipe}/{entry.name}",
+                "flow": f"{entry.name}/{entry.name}",
                 "notebooks": notebooks,
             })
 
@@ -385,7 +365,6 @@ def mcp_nb_status(
 
 def mcp_nb_update(
     root: Path,
-    pipe: str,
     flow: str,
     name: str,
     status: str | None = None,
@@ -398,7 +377,6 @@ def mcp_nb_update(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         name: Notebook name (stem, without extension).
         status: New status (draft/active/stale/promoted/archived).
@@ -417,19 +395,19 @@ def mcp_nb_update(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     flow_root = Path(entry.config_path).parent if entry.config_path else None
     if not flow_root:
-        return {"error": f"No config_path for {pipe}/{flow}"}
+        return {"error": f"No config_path for {flow}"}
     if not flow_root.is_absolute():
         flow_root = root / flow_root
 
     nb_cfg_path = flow_root / "notebooks" / "notebook.yml"
     if not nb_cfg_path.exists():
-        return {"error": f"No notebook.yml found for {pipe}/{flow}"}
+        return {"error": f"No notebook.yml found for {flow}"}
 
     try:
         nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
@@ -480,7 +458,7 @@ def mcp_nb_update(
     }
 
 
-def mcp_mod_list(root: Path, pipe: str, flow: str | None = None) -> dict[str, Any]:
+def mcp_mod_list(root: Path, flow: str | None = None) -> dict[str, Any]:
     """List mods for a specific flow."""
     from pipeio.registry import PipelineRegistry
 
@@ -490,43 +468,46 @@ def mcp_mod_list(root: Path, pipe: str, flow: str | None = None) -> dict[str, An
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "mods": {name: mod.model_dump() for name, mod in entry.mods.items()},
     }
 
 
 def _resolve_mod_doc_path(
-    root: Path, pipe: str, flow: str, mod: str,
+    root: Path, flow: str, mod: str,
 ) -> tuple[str | None, bool]:
-    """Resolve documentation path for a mod using docs tree conventions.
+    """Resolve documentation path for a mod.
 
     Checks these locations in order:
-    1. ``docs/pipelines/pipe-{pipe}/flow-{flow}/mod-{mod}/index.md``
-    2. ``docs/explanation/pipelines/pipe-{pipe}/flow-{flow}/mod-{mod}/index.md``
+    1. ``docs/pipelines/{flow}/mods/{mod}.md``
+    2. ``docs/pipelines/{flow}/mod-{mod}/index.md`` (legacy)
+    3. ``docs/explanation/pipelines/{flow}/mod-{mod}/index.md`` (legacy)
 
     Returns (relative_path_or_None, exists_bool).
     """
     candidates = [
-        root / "docs" / "pipelines" / f"pipe-{pipe}" / f"flow-{flow}" / f"mod-{mod}" / "index.md",
-        root / "docs" / "explanation" / "pipelines" / f"pipe-{pipe}" / f"flow-{flow}" / f"mod-{mod}" / "index.md",
+        root / "docs" / "pipelines" / flow / "mods" / f"{mod}.md",
+        root / "docs" / "pipelines" / flow / f"mod-{mod}" / "index.md",
+        root / "docs" / "explanation" / "pipelines" / flow / f"mod-{mod}" / "index.md",
     ]
     for path in candidates:
         if path.exists():
             return str(path.relative_to(root)), True
-    # Return the first convention path even if it doesn't exist yet
+    # Return the preferred convention path even if it doesn't exist yet
     return str(candidates[0].relative_to(root)), False
 
 
 def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
-    """Resolve modkeys (pipe-X_flow-Y_mod-Z) into metadata.
+    """Resolve modkeys into metadata.
 
-    Modkey format: ``pipe-<pipe>_flow-<flow>_mod-<mod>``
+    Modkey format: ``{flow}_mod-{mod}``
+    Legacy format ``pipe-{pipe}_flow-{flow}_mod-{mod}`` is also accepted.
     """
     import re
 
@@ -537,21 +518,26 @@ def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
         return _NO_REGISTRY
 
     registry = PipelineRegistry.from_yaml(registry_path)
-    pattern = re.compile(
+    # New format: flow_mod-mod  or  legacy: pipe-X_flow-Y_mod-Z
+    new_pattern = re.compile(r"^(?:@)?(?P<flow>[^_]+)_mod-(?P<mod>.+)$")
+    legacy_pattern = re.compile(
         r"^(?:@)?pipe-(?P<pipe>[^_]+)_flow-(?P<flow>[^_]+)_mod-(?P<mod>.+)$"
     )
 
     results: list[dict[str, Any]] = []
     for raw_key in modkeys:
         key = raw_key.strip()
-        m = pattern.match(key)
+        m = new_pattern.match(key)
+        if not m:
+            m = legacy_pattern.match(key)
         if not m:
             results.append({"input": raw_key, "error": f"Invalid modkey format: {key!r}"})
             continue
 
-        pipe, flow, mod = m.group("pipe"), m.group("flow"), m.group("mod")
+        flow = m.group("flow")
+        mod = m.group("mod")
         try:
-            entry = registry.get(pipe, flow)
+            entry = registry.get(flow)
         except (KeyError, ValueError) as exc:
             results.append({"input": raw_key, "error": str(exc)})
             continue
@@ -559,17 +545,14 @@ def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
         mod_entry = entry.mods.get(mod)
         result: dict[str, Any] = {
             "input": raw_key,
-            "modkey": key,
-            "pipe": pipe,
+            "modkey": f"{flow}_mod-{mod}",
             "flow": flow,
             "mod": mod,
             "found": mod_entry is not None,
         }
         if mod_entry:
             result["meta"] = mod_entry.model_dump()
-            # Resolve doc_path from both flow-local and docs tree conventions
-            doc_path, doc_exists = _resolve_mod_doc_path(root, pipe, flow, mod)
-            # Prefer flow-local doc_path from registry if it exists on disk
+            doc_path, doc_exists = _resolve_mod_doc_path(root, flow, mod)
             if mod_entry.doc_path and (root / mod_entry.doc_path).exists():
                 result["doc_path"] = mod_entry.doc_path
                 result["doc_exists"] = True
@@ -577,8 +560,7 @@ def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
                 result["doc_path"] = doc_path
                 result["doc_exists"] = doc_exists
         else:
-            # Even for missing mods, provide the expected doc path
-            doc_path, doc_exists = _resolve_mod_doc_path(root, pipe, flow, mod)
+            doc_path, doc_exists = _resolve_mod_doc_path(root, flow, mod)
             result["doc_path"] = doc_path
             result["doc_exists"] = doc_exists
         results.append(result)
@@ -588,7 +570,6 @@ def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
 
 def mcp_mod_context(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     mod: str = "",
 ) -> dict[str, Any]:
@@ -599,7 +580,6 @@ def mcp_mod_context(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         mod: Module name.
     """
@@ -617,13 +597,13 @@ def mcp_mod_context(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     mod_entry = entry.mods.get(mod)
     if mod_entry is None:
-        return {"error": f"Mod {mod!r} not found in {pipe}/{entry.name}"}
+        return {"error": f"Mod {mod!r} not found in {entry.name}"}
 
     flow_dir = Path(entry.code_path)
     if not flow_dir.is_absolute():
@@ -671,7 +651,7 @@ def mcp_mod_context(
 
     # --- Doc: read mod documentation ---
     doc_content: str | None = None
-    doc_path_str, doc_exists = _resolve_mod_doc_path(root, pipe, entry.name, mod)
+    doc_path_str, doc_exists = _resolve_mod_doc_path(root, entry.name, mod)
     if mod_entry.doc_path and (root / mod_entry.doc_path).exists():
         doc_path_str = mod_entry.doc_path
         doc_exists = True
@@ -730,7 +710,7 @@ def mcp_mod_context(
                 pass
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "mod": mod,
         "mod_meta": mod_entry.model_dump(),
@@ -788,12 +768,12 @@ def mcp_registry_scan(root: Path) -> dict[str, Any]:
     total_mods = sum(len(f.mods) for f in flows)
     return {
         "scanned": str(pipelines_dir),
-        "pipes": len(registry.list_pipes()),
+        "pipes": len(registry.list_flows()),
         "flows": len(flows),
         "mods": total_mods,
         "flow_details": [
             {
-                "pipe": f.pipe,
+                "flow": f.name,
                 "flow": f.name,
                 "app_type": f.app_type,
                 "has_config": f.config_path is not None,
@@ -846,15 +826,14 @@ def mcp_modkey_bib(
     entries: list[str] = []
     count = 0
     for flow_entry in flows:
-        pipe = flow_entry.pipe
         flow = flow_entry.name
         for mod_name, mod_entry in sorted(flow_entry.mods.items()):
-            modkey = f"pipe-{pipe}_flow-{flow}_mod-{mod_name}"
-            doc_path, _ = _resolve_mod_doc_path(root, pipe, flow, mod_name)
+            modkey = f"{flow}_mod-{mod_name}"
+            doc_path, _ = _resolve_mod_doc_path(root, flow, mod_name)
             rules_str = ", ".join(mod_entry.rules) if mod_entry.rules else ""
             entry = (
                 f"@misc{{{modkey},\n"
-                f"  title     = {{{author} mod: pipe={pipe} flow={flow} mod={mod_name}}},\n"
+                f"  title     = {{{author} mod: flow={flow} mod={mod_name}}},\n"
                 f"  author    = {{{author}}},\n"
                 f"  year      = {{{year}}},\n"
                 f"  note      = {{doc_path={doc_path}; rules={rules_str}}},\n"
@@ -882,7 +861,7 @@ def mcp_modkey_bib(
         "entries": count,
         "flows": len(flows),
         "modkeys": [
-            f"pipe-{f.pipe}_flow-{f.name}_mod-{m}"
+            f"{f.name}_mod-{m}"
             for f in flows
             for m in sorted(f.mods)
         ],
@@ -941,7 +920,6 @@ def mcp_contracts_validate(root: Path) -> dict[str, Any]:
 
 def mcp_nb_create(
     root: Path,
-    pipe: str,
     flow: str,
     name: str,
     kind: str = "investigate",
@@ -954,7 +932,6 @@ def mcp_nb_create(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         name: Notebook name (e.g. ``investigate_noise``).
         kind: Prefix convention (investigate, explore, demo).
@@ -970,7 +947,7 @@ def mcp_nb_create(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -1011,7 +988,7 @@ def mcp_nb_create(
     lines.append("# ---")
     lines.append("")
     lines.append(f'# %% [markdown]')
-    desc_text = description or f"{kind.title()} notebook for {pipe}/{flow}"
+    desc_text = description or f"{kind.title()} notebook for {flow}"
     lines.append(f"# # {name.replace('_', ' ').title()}")
     lines.append(f"#")
     lines.append(f"# {desc_text}")
@@ -1083,7 +1060,7 @@ def mcp_nb_create(
 
     return {
         "created": result_path,
-        "pipe": pipe,
+        "flow": flow,
         "flow": flow,
         "name": name,
         "kind": kind,
@@ -1094,7 +1071,6 @@ def mcp_nb_create(
 
 def mcp_nb_sync(
     root: Path,
-    pipe: str,
     flow: str,
     name: str,
     formats: list[str] | None = None,
@@ -1106,7 +1082,6 @@ def mcp_nb_sync(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         name: Notebook basename (without extension).
         formats: Which formats to produce (default: ['ipynb', 'myst']).
@@ -1124,7 +1099,7 @@ def mcp_nb_sync(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -1197,7 +1172,6 @@ def mcp_nb_sync(
 
 def mcp_nb_sync_flow(
     root: Path,
-    pipe: str,
     flow: str,
     direction: str = "py2nb",
     force: bool = False,
@@ -1207,7 +1181,6 @@ def mcp_nb_sync_flow(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         direction: 'py2nb' or 'nb2py'.
         force: If True, sync even if up-to-date.
@@ -1223,7 +1196,7 @@ def mcp_nb_sync_flow(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -1233,7 +1206,7 @@ def mcp_nb_sync_flow(
 
     nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
     if not nb_cfg_path.exists():
-        return {"error": f"No notebook.yml found for {pipe}/{flow}"}
+        return {"error": f"No notebook.yml found for {flow}"}
 
     nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
     results: list[dict[str, Any]] = []
@@ -1259,7 +1232,7 @@ def mcp_nb_sync_flow(
     skipped = [r for r in results if r.get("skipped")]
 
     return {
-        "pipe": pipe,
+        "flow": flow,
         "flow": flow,
         "direction": direction,
         "total": len(results),
@@ -1271,7 +1244,6 @@ def mcp_nb_sync_flow(
 
 def mcp_nb_diff(
     root: Path,
-    pipe: str,
     flow: str,
     name: str,
 ) -> dict[str, Any]:
@@ -1283,7 +1255,6 @@ def mcp_nb_diff(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         name: Notebook basename (without extension).
     """
@@ -1295,7 +1266,7 @@ def mcp_nb_diff(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -1330,7 +1301,6 @@ def mcp_nb_diff(
 
 def mcp_nb_lab(
     root: Path,
-    pipe: str | None = None,
     flow: str | None = None,
     sync: bool = False,
     python_bin: str | None = None,
@@ -1343,7 +1313,6 @@ def mcp_nb_lab(
 
     Args:
         root: Project root.
-        pipe: Filter to a specific pipeline (optional).
         flow: Filter to a specific flow (optional).
         sync: If True, sync py→ipynb before linking (default False).
         python_bin: Python binary where jupytext is installed (optional).
@@ -1351,7 +1320,7 @@ def mcp_nb_lab(
     from pipeio.notebook.lifecycle import nb_lab
 
     result = nb_lab(
-        root, pipe=pipe, flow=flow,
+        root, flow=flow,
         sync=sync, python_bin=python_bin,
     )
 
@@ -1405,7 +1374,6 @@ def mcp_nb_scan(
 
 def mcp_nb_read(
     root: Path,
-    pipe: str,
     flow: str,
     name: str,
 ) -> dict[str, Any]:
@@ -1416,7 +1384,6 @@ def mcp_nb_read(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         name: Notebook basename (without extension).
     """
@@ -1428,7 +1395,7 @@ def mcp_nb_read(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -1514,7 +1481,6 @@ def mcp_nb_audit(root: Path) -> dict[str, Any]:
 
 def mcp_nb_publish(
     root: Path,
-    pipe: str,
     flow: str,
     name: str,
     format: str = "",
@@ -1529,7 +1495,6 @@ def mcp_nb_publish(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         name: Notebook basename (without extension).
         format: Force a specific format ('myst', 'html', or '' for auto).
@@ -1546,7 +1511,7 @@ def mcp_nb_publish(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -1583,7 +1548,7 @@ def mcp_nb_publish(
     elif format == "html":
         publish_myst, publish_html = False, True
 
-    dest_dir = root / "docs" / "pipelines" / pipe / flow / "notebooks"
+    dest_dir = root / "docs" / "pipelines" / flow / "notebooks"
     dest_dir.mkdir(parents=True, exist_ok=True)
     published: list[str] = []
 
@@ -1623,7 +1588,7 @@ def mcp_nb_publish(
 
     return {
         "published": published,
-        "pipe": pipe,
+        "flow": flow,
         "flow": flow,
         "name": name,
     }
@@ -1783,7 +1748,7 @@ def _parse_snakefile_rules(text: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def mcp_rule_list(root: Path, pipe: str, flow: str | None = None) -> dict[str, Any]:
+def mcp_rule_list(root: Path, flow: str | None = None) -> dict[str, Any]:
     """List rules for a flow with input/output signatures and mod membership.
 
     Parses the flow's Snakefile (and any ``.smk`` includes) and returns
@@ -1798,7 +1763,7 @@ def mcp_rule_list(root: Path, pipe: str, flow: str | None = None) -> dict[str, A
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -1836,7 +1801,7 @@ def mcp_rule_list(root: Path, pipe: str, flow: str | None = None) -> dict[str, A
             all_rules.append(rule_info)
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "rule_count": len(all_rules),
         "rules": all_rules,
@@ -1891,7 +1856,6 @@ def _output_spec_to_expr(spec: Any) -> str:
 
 def mcp_rule_stub(
     root: Path,
-    pipe: str,
     flow: str | None,
     rule_name: str,
     inputs: dict[str, Any] | None = None,
@@ -1903,7 +1867,6 @@ def mcp_rule_stub(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         rule_name: Name for the new rule.
         inputs: ``{name: bids_pattern_str}`` or ``{name: {source_rule, member}}``.
@@ -1921,7 +1884,7 @@ def mcp_rule_stub(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -1949,7 +1912,7 @@ def mcp_rule_stub(
     stub_text = "\n".join(lines)
     return {
         "rule_name": rule_name,
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "stub": stub_text,
     }
@@ -1957,7 +1920,6 @@ def mcp_rule_stub(
 
 def mcp_rule_insert(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     rule_name: str = "",
     rule_text: str | None = None,
@@ -1975,7 +1937,6 @@ def mcp_rule_insert(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         rule_name: Name for the rule (required).
         rule_text: Pre-formatted rule text to insert. If omitted, generated
@@ -1999,7 +1960,7 @@ def mcp_rule_insert(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -2121,7 +2082,7 @@ def mcp_rule_insert(
         "inserted": True,
         "rule_name": rule_name,
         "target_file": rel_path,
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "rule_text": rule_text,
         "after_rule": after_rule,
@@ -2173,7 +2134,6 @@ def _rebuild_rule_text(
 
 def mcp_rule_update(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     rule_name: str = "",
     add_inputs: dict[str, Any] | None = None,
@@ -2191,7 +2151,6 @@ def mcp_rule_update(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         rule_name: Name of the existing rule to patch.
         add_inputs: ``{name: spec}`` entries to add to the input section.
@@ -2212,7 +2171,7 @@ def mcp_rule_update(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -2323,7 +2282,7 @@ def mcp_rule_update(
     return {
         "rule_name": rule_name,
         "source_file": rel_path,
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "diff": diff,
         "applied": applied,
@@ -2413,7 +2372,7 @@ def _validate_registry_entry(
     return errors
 
 
-def mcp_config_read(root: Path, pipe: str, flow: str | None = None) -> dict[str, Any]:
+def mcp_config_read(root: Path, flow: str | None = None) -> dict[str, Any]:
     """Read and parse a flow's config.yml with anchor resolution and bids mapping.
 
     Returns the parsed config broken into logical sections:
@@ -2434,12 +2393,12 @@ def mcp_config_read(root: Path, pipe: str, flow: str | None = None) -> dict[str,
 
     reg = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = reg.get(pipe, flow)
+        entry = reg.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     if not entry.config_path:
-        return {"error": f"No config_path registered for {pipe}/{entry.name}"}
+        return {"error": f"No config_path registered for {entry.name}"}
 
     cfg_path = Path(entry.config_path)
     if not cfg_path.is_absolute():
@@ -2496,7 +2455,7 @@ def mcp_config_read(root: Path, pipe: str, flow: str | None = None) -> dict[str,
         rel_path = str(cfg_path)
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "config_path": rel_path,
         "has_anchors": _has_yaml_anchors(raw_text),
@@ -2587,7 +2546,6 @@ def _ruamel_deep_update(
 
 def mcp_config_patch(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     registry_entry: dict[str, Any] | None = None,
     params_entry: dict[str, Any] | None = None,
@@ -2604,7 +2562,6 @@ def mcp_config_patch(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         registry_entry: ``{group_name: group_dict}`` to add/replace in ``registry:``.
         params_entry: ``{section: {key: value}}`` to add/update in top-level params.
@@ -2623,12 +2580,12 @@ def mcp_config_patch(
 
     reg = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = reg.get(pipe, flow)
+        entry = reg.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     if not entry.config_path:
-        return {"error": f"No config_path registered for {pipe}/{entry.name}"}
+        return {"error": f"No config_path registered for {entry.name}"}
 
     cfg_path = Path(entry.config_path)
     if not cfg_path.is_absolute():
@@ -2725,7 +2682,6 @@ def mcp_config_patch(
 
 def mcp_config_init(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     input_dir: str = "",
     output_dir: str = "",
@@ -2743,7 +2699,6 @@ def mcp_config_init(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         input_dir: Path to input data (relative to project root).
         output_dir: Path to output derivatives (relative to project root).
@@ -2760,7 +2715,7 @@ def mcp_config_init(
 
     reg = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = reg.get(pipe, flow)
+        entry = reg.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -2800,10 +2755,10 @@ def mcp_config_init(
 
     # Output paths
     if not output_dir:
-        output_dir = f"derivatives/{pipe}"
+        output_dir = f"derivatives/{flow}"
     config["output_dir"] = output_dir
     config["output_registry"] = (
-        f"{output_dir}/pipe-{entry.pipe}_flow-{entry.name}_registry.yml"
+        f"{output_dir}/{entry.name}_registry.yml"
     )
 
     # Registry
@@ -2841,7 +2796,7 @@ def mcp_config_init(
 
     return {
         "created": rel_path,
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "output_dir": output_dir,
         "registry_groups": list((registry_groups or {}).keys()),
@@ -2869,7 +2824,7 @@ def mcp_registry_validate(root: Path) -> dict[str, Any]:
         "errors": result.errors,
         "warnings": result.warnings,
         "stats": {
-            "pipes": len(registry.list_pipes()),
+            "pipes": len(registry.list_flows()),
             "flows": len(flows),
             "mods": total_mods,
         },
@@ -2878,7 +2833,6 @@ def mcp_registry_validate(root: Path) -> dict[str, Any]:
 
 def mcp_nb_analyze(
     root: Path,
-    pipe: str,
     flow: str,
     name: str,
 ) -> dict[str, Any]:
@@ -2890,7 +2844,6 @@ def mcp_nb_analyze(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         name: Notebook basename (without extension).
     """
@@ -2903,7 +2856,7 @@ def mcp_nb_analyze(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -2924,7 +2877,6 @@ def mcp_nb_analyze(
 
 def mcp_mod_create(
     root: Path,
-    pipe: str,
     flow: str,
     mod: str,
     description: str = "",
@@ -2946,7 +2898,6 @@ def mcp_mod_create(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         mod: Mod name (lowercase, underscore-separated).
         description: One-line purpose for the mod header.
@@ -2964,7 +2915,7 @@ def mcp_mod_create(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -3078,7 +3029,7 @@ def mcp_mod_create(
         doc_lines = [
             "---",
             f"mod: {mod}",
-            f"pipe: {pipe}",
+            f"flow: {flow}",
             f"flow: {entry.name}",
             "---",
             "",
@@ -3106,7 +3057,7 @@ def mcp_mod_create(
     return {
         "created_script": script_rel,
         "created_doc": doc_rel if created_doc else None,
-        "pipe": pipe,
+        "flow": flow,
         "flow": entry.name,
         "mod": mod,
         "seeded_from": from_notebook if nb_imports else None,
@@ -3122,7 +3073,6 @@ def mcp_mod_create(
 
 def mcp_nb_exec(
     root: Path,
-    pipe: str,
     flow: str,
     name: str,
     params: dict[str, Any] | None = None,
@@ -3136,7 +3086,6 @@ def mcp_nb_exec(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name.
         name: Notebook basename (without extension).
         params: RunCard parameter overrides (injected into papermill).
@@ -3154,7 +3103,7 @@ def mcp_nb_exec(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -3223,7 +3172,7 @@ def mcp_nb_exec(
             "status": "timeout",
             "elapsed_seconds": elapsed,
             "timeout": timeout,
-            "pipe": pipe,
+            "flow": flow,
             "flow": entry.name,
             "name": name,
         }
@@ -3241,7 +3190,7 @@ def mcp_nb_exec(
             "elapsed_seconds": elapsed,
             "output_path": output_rel,
             "stderr": result.stderr[-2000:] if result.stderr else "",
-            "pipe": pipe,
+            "flow": flow,
             "flow": entry.name,
             "name": name,
         }
@@ -3250,7 +3199,7 @@ def mcp_nb_exec(
         "status": "ok",
         "elapsed_seconds": elapsed,
         "output_path": output_rel,
-        "pipe": pipe,
+        "flow": flow,
         "flow": entry.name,
         "name": name,
         "params_injected": list(params.keys()) if params else [],
@@ -3264,7 +3213,6 @@ def mcp_nb_exec(
 
 def mcp_dag_export(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     graph_type: str = "rulegraph",
     output_format: str = "dot",
@@ -3277,7 +3225,6 @@ def mcp_dag_export(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         graph_type: ``rulegraph`` (rule-level, compact), ``dag`` (job-level),
             or ``d3dag`` (JSON for D3.js).
@@ -3296,7 +3243,7 @@ def mcp_dag_export(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -3358,7 +3305,7 @@ def mcp_dag_export(
             }
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "graph_type": graph_type,
         "format": "json" if graph_type == "d3dag" else output_format,
@@ -3368,7 +3315,6 @@ def mcp_dag_export(
 
 def mcp_report(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     output_path: str = "",
     target: str = "",
@@ -3385,10 +3331,9 @@ def mcp_report(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         output_path: Where to write the report (relative to root).
-            Defaults to ``derivatives/{pipe}/report.html``.
+            Defaults to ``derivatives/{flow}/report.html``.
         target: Target rule to run before generating the report (e.g.
             ``"report"``). If empty, ``--report`` runs against existing
             metadata only.
@@ -3404,7 +3349,7 @@ def mcp_report(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -3420,7 +3365,7 @@ def mcp_report(
 
     # Determine output path
     if not output_path:
-        output_path = f"derivatives/{entry.pipe}/report.html"
+        output_path = f"derivatives/{entry.name}/report.html"
     report_abs = root / output_path
     report_abs.parent.mkdir(parents=True, exist_ok=True)
 
@@ -3446,7 +3391,7 @@ def mcp_report(
         return {"error": f"Snakemake report failed: {result.stderr[:1000]}"}
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "report_path": output_path,
         "exists": report_abs.exists(),
@@ -3461,7 +3406,6 @@ def mcp_report(
 
 def mcp_completion(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     mod: str | None = None,
 ) -> dict[str, Any]:
@@ -3472,7 +3416,6 @@ def mcp_completion(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         mod: Filter to a specific mod's output groups (optional).
     """
@@ -3485,12 +3428,12 @@ def mcp_completion(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     if not entry.config_path:
-        return {"error": f"No config_path for {pipe}/{entry.name}"}
+        return {"error": f"No config_path for {entry.name}"}
 
     cfg_path = Path(entry.config_path)
     if not cfg_path.is_absolute():
@@ -3583,7 +3526,7 @@ def mcp_completion(
         })
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "output_dir": cfg.output_dir,
         "groups": group_results,
@@ -3597,7 +3540,6 @@ def mcp_completion(
 
 def mcp_target_paths(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     group: str = "",
     member: str = "",
@@ -3621,7 +3563,6 @@ def mcp_target_paths(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         group: Registry group name (e.g. ``preproc``, ``spectral``).
         member: Registry member name (e.g. ``cleaned``, ``psd``).
@@ -3640,13 +3581,13 @@ def mcp_target_paths(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
     try:
         ctx = PipelineContext.from_registry(
-            pipe, flow, root=root, registry=registry,
+            flow, root=root, registry=registry,
         )
     except (FileNotFoundError, Exception) as exc:
         return {"error": str(exc)}
@@ -3659,7 +3600,7 @@ def mcp_target_paths(
             pattern = {m: ctx.pattern(g, m) for m in members}
             groups_info[g] = {"members": members, "patterns": pattern}
         return {
-            "pipe": entry.pipe,
+            "flow": entry.name,
             "flow": entry.name,
             "mode": "list",
             "groups": groups_info,
@@ -3672,7 +3613,7 @@ def mcp_target_paths(
             # Expand a single member
             paths = ctx.expand(group, member, **ent)
             return {
-                "pipe": entry.pipe,
+                "flow": entry.name,
                 "flow": entry.name,
                 "mode": "expand",
                 "group": group,
@@ -3691,7 +3632,7 @@ def mcp_target_paths(
                     "count": len(paths),
                 }
             return {
-                "pipe": entry.pipe,
+                "flow": entry.name,
                 "flow": entry.name,
                 "mode": "expand",
                 "group": group,
@@ -3708,7 +3649,7 @@ def mcp_target_paths(
         # No entities: show the pattern template instead
         pattern = ctx.pattern(group, member)
         return {
-            "pipe": entry.pipe,
+            "flow": entry.name,
             "flow": entry.name,
             "mode": "pattern",
             "group": group,
@@ -3722,7 +3663,7 @@ def mcp_target_paths(
         return {"error": str(exc)}
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "mode": "resolve",
         "group": group,
@@ -3740,7 +3681,6 @@ def mcp_target_paths(
 
 def mcp_cross_flow(
     root: Path,
-    pipe: str | None = None,
     flow: str | None = None,
 ) -> dict[str, Any]:
     """Map output_registry → input_registry chains across flows.
@@ -3762,7 +3702,7 @@ def mcp_cross_flow(
         return _NO_REGISTRY
 
     registry = PipelineRegistry.from_yaml(registry_path)
-    flows = registry.list_flows(pipe=pipe)
+    flows = registry.list_flows(prefix=prefix)
 
     # Build flow metadata with input/output registry paths
     flow_meta: list[dict[str, Any]] = []
@@ -3781,9 +3721,9 @@ def mcp_cross_flow(
             continue
 
         flow_meta.append({
-            "pipe": entry.pipe,
             "flow": entry.name,
-            "flow_id": f"{entry.pipe}/{entry.name}",
+            "flow": entry.name,
+            "flow_id": f"{entry.name}/{entry.name}",
             "input_dir": raw.get("input_dir", ""),
             "input_registry": raw.get("input_registry", ""),
             "output_dir": raw.get("output_dir", ""),
@@ -3843,7 +3783,6 @@ def mcp_cross_flow(
 
 def mcp_log_parse(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     run_id: str | None = None,
     log_path: str | None = None,
@@ -3855,7 +3794,6 @@ def mcp_log_parse(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         run_id: Specific run ID from .pipeio/runs.json (optional).
         log_path: Direct path to a Snakemake log file (optional).
@@ -3868,7 +3806,7 @@ def mcp_log_parse(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -3999,7 +3937,7 @@ def mcp_log_parse(
         log_rel = str(target_log)
 
     return {
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "log_path": log_rel,
         "rules_started": len(completed),
@@ -4051,7 +3989,6 @@ def _save_runs(root: Path, runs: list[dict[str, Any]]) -> None:
 
 def mcp_run(
     root: Path,
-    pipe: str,
     flow: str | None = None,
     targets: list[str] | None = None,
     cores: int = 1,
@@ -4066,7 +4003,6 @@ def mcp_run(
 
     Args:
         root: Project root.
-        pipe: Pipeline name.
         flow: Flow name (optional for single-flow pipes).
         targets: Snakemake target rules (optional).
         cores: Number of cores (default 1).
@@ -4093,7 +4029,7 @@ def mcp_run(
 
     registry = PipelineRegistry.from_yaml(registry_path)
     try:
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
 
@@ -4133,7 +4069,7 @@ def mcp_run(
     if extra_args:
         snake_cmd.extend(extra_args)
 
-    screen_name = f"pipeio-{entry.pipe}-{entry.name}-{run_id}"
+    screen_name = f"pipeio-{entry.name}-{entry.name}-{run_id}"
     # Use stdbuf to force line-buffered stdout so log is visible during
     # long-running steps (e.g. BIDS indexing under conda run).
     stdbuf_prefix = "stdbuf -oL " if shutil.which("stdbuf") else ""
@@ -4153,7 +4089,7 @@ def mcp_run(
     runs = _load_runs(root)
     run_record = {
         "id": run_id,
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "screen": screen_name,
         "log_path": str(log_path.relative_to(root)),
@@ -4170,7 +4106,7 @@ def mcp_run(
         "run_id": run_id,
         "screen": screen_name,
         "log_path": str(log_path.relative_to(root)),
-        "pipe": entry.pipe,
+        "flow": entry.name,
         "flow": entry.name,
         "dryrun": dryrun,
     }
@@ -4179,7 +4115,6 @@ def mcp_run(
 def mcp_run_status(
     root: Path,
     run_id: str | None = None,
-    pipe: str | None = None,
     flow: str | None = None,
 ) -> dict[str, Any]:
     """Query progress of running or recent Snakemake runs.
@@ -4202,7 +4137,7 @@ def mcp_run_status(
     if run_id:
         runs = [r for r in runs if r["id"] == run_id]
     if pipe:
-        runs = [r for r in runs if r.get("pipe") == pipe]
+        runs = [r for r in runs if r.get("flow") == flow]
     if flow:
         runs = [r for r in runs if r.get("flow") == flow]
 
@@ -4305,7 +4240,7 @@ def mcp_run_dashboard(root: Path) -> dict[str, Any]:
     totals = {"active": 0, "completed": 0, "failed": 0}
 
     for run in all_runs:
-        flow_key = f"{run.get('pipe', '?')}/{run.get('flow', '?')}"
+        flow_key = run.get('flow', '?')
         if flow_key not in flow_stats:
             flow_stats[flow_key] = {"active": 0, "completed": 0, "failed": 0}
 

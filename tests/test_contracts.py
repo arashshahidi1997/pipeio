@@ -17,8 +17,7 @@ from pipeio.contracts import Contract, Check, ContractResult, validate_flow_cont
 def test_contract_all_pass():
     contract = Contract(
         name="test",
-        checks=[Check("exists", "file exists", lambda p: p.exists())],
-    )
+        checks=[Check("exists", "file exists", lambda p: p.exists())])
     import tempfile
     with tempfile.NamedTemporaryFile() as f:
         result = contract.validate([Path(f.name)])
@@ -29,8 +28,7 @@ def test_contract_all_pass():
 def test_contract_failure(tmp_path):
     contract = Contract(
         name="test",
-        checks=[Check("exists", "file exists", lambda p: p.exists())],
-    )
+        checks=[Check("exists", "file exists", lambda p: p.exists())])
     result = contract.validate([tmp_path / "nonexistent.txt"])
     assert not result.ok
     assert len(result.failed) == 1
@@ -42,8 +40,7 @@ def test_contract_error():
 
     contract = Contract(
         name="test",
-        checks=[Check("bad", "always errors", bad_check)],
-    )
+        checks=[Check("bad", "always errors", bad_check)])
     result = contract.validate([Path("x")])
     assert not result.ok
     assert len(result.errors) == 1

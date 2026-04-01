@@ -22,7 +22,7 @@ def _scaffold_project(root: Path, *, under_projio: bool = False) -> Path:
     pipeio_dir.mkdir(parents=True)
 
     # Create a flow directory
-    flow_dir = root / "code" / "pipelines" / "preproc" / "denoise"
+    flow_dir = root / "code" / "pipelines" / "denoise"
     flow_dir.mkdir(parents=True)
     (flow_dir / "Snakefile").touch()
     (flow_dir / "config.yml").write_text("output_dir: results\n", encoding="utf-8")
@@ -52,7 +52,7 @@ def _scaffold_project(root: Path, *, under_projio: bool = False) -> Path:
     # Write registry
     reg = {
         "flows": {
-            "preproc/denoise": {
+            "denoise": {
                 "name": "denoise",
                 "pipe": "preproc",
                 "code_path": "code/pipelines/preproc/denoise",
@@ -156,7 +156,7 @@ def test_docs_collect_copies_flow_docs(tmp_path):
     # Should have collected index.md and mod-smoothing.md
     doc_files = [p for p in collected if p.endswith(".md")]
     assert len(doc_files) == 2
-    target = tmp_path / "docs" / "pipelines" / "preproc" / "denoise"
+    target = tmp_path / "docs" / "pipelines" / "denoise"
     assert (target / "index.md").exists()
     assert (target / "mod-smoothing.md").exists()
 
@@ -179,7 +179,7 @@ def test_docs_collect_publishes_html(tmp_path):
 
     # Create a fake .ipynb so publish has something to work with
     import json
-    flow_dir = tmp_path / "code" / "pipelines" / "preproc" / "denoise"
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
     ipynb = flow_dir / "notebooks" / "analysis.ipynb"
     nb_data = {
         "nbformat": 4,
@@ -224,7 +224,7 @@ def test_docs_nav_empty(tmp_path):
 
 def test_docs_nav_generates_yaml(tmp_path):
     # Create the docs/pipelines structure manually
-    target = tmp_path / "docs" / "pipelines" / "preproc" / "denoise"
+    target = tmp_path / "docs" / "pipelines" / "denoise"
     target.mkdir(parents=True)
     (target / "index.md").write_text("# Denoise\n", encoding="utf-8")
     (target / "mod-smoothing.md").write_text("# Smoothing\n", encoding="utf-8")
@@ -242,7 +242,7 @@ def test_docs_nav_generates_yaml(tmp_path):
 
 
 def test_docs_nav_includes_notebooks(tmp_path):
-    target = tmp_path / "docs" / "pipelines" / "preproc" / "denoise" / "notebooks"
+    target = tmp_path / "docs" / "pipelines" / "denoise" / "notebooks"
     target.mkdir(parents=True)
     (target / "analysis.html").touch()
 
@@ -290,7 +290,7 @@ def test_cli_flow_list_uses_find_registry(tmp_path, capsys):
     capsys.readouterr()
     ret = main(["flow", "--root", str(tmp_path), "list"])
     assert ret == 0
-    assert "preproc/denoise" in capsys.readouterr().out
+    assert "denoise" in capsys.readouterr().out
 
 
 def test_cli_registry_validate_projio(tmp_path, capsys):

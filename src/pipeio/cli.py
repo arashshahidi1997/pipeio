@@ -24,8 +24,8 @@ def _find_root(start: Path | None = None) -> Path:
     return cwd
 
 
-def _detect_flow_from_cwd(root: Path) -> tuple[str, str] | None:
-    """Try to detect (pipe, flow) from cwd by matching against registry entries."""
+def _detect_flow_from_cwd(root: Path) -> str | None:
+    """Try to detect flow name from cwd by matching against registry entries."""
     from pipeio.registry import PipelineRegistry
 
     reg_path = _find_registry(root)
@@ -41,7 +41,7 @@ def _detect_flow_from_cwd(root: Path) -> tuple[str, str] | None:
         code_path = code_path.resolve()
         # cwd is inside this flow's code directory
         if cwd == code_path or code_path in cwd.parents:
-            return (entry.pipe, entry.name)
+            return entry.name
     return None
 
 
@@ -100,17 +100,13 @@ def _load_registry(root: Path):
 
 
 def _resolve_flow(root: Path, flow_name: str):
-    """Look up a flow by name or pipe/flow. Returns (entry, root) or None."""
+    """Look up a flow by name. Returns entry or None."""
     registry = _load_registry(root)
     if registry is None:
         return None
 
-    # Try exact name match first, then pipe/flow
     for f in registry.list_flows():
         if f.name == flow_name:
-            return f
-    for f in registry.list_flows():
-        if f"{f.pipe}/{f.name}" == flow_name:
             return f
 
     print(f"Unknown flow: {flow_name}", file=sys.stderr)
@@ -137,8 +133,7 @@ def _cmd_flow_list(args: argparse.Namespace) -> int:
     if registry is None:
         return 1
 
-    pipe = getattr(args, "pipe", None)
-    flows = registry.list_flows(pipe=pipe)
+    flows = registry.list_flows()
     if not flows:
         print("No flows registered.")
         return 0
@@ -146,7 +141,7 @@ def _cmd_flow_list(args: argparse.Namespace) -> int:
     for f in flows:
         config = f"  config={f.config_path}" if f.config_path else ""
         mods = f"  mods={len(f.mods)}" if f.mods else ""
-        print(f"  {f.pipe}/{f.name}  code={f.code_path}{config}{mods}")
+        print(f"  {f.name}  code={f.code_path}{config}{mods}")
     return 0
 
 
@@ -251,7 +246,7 @@ def _cmd_flow_status(args: argparse.Namespace) -> int:
     flow_dir = _flow_code_dir(root, entry)
     cfg_path = _flow_config_path(root, entry)
 
-    print(f"  flow:    {entry.pipe}/{entry.name}")
+    print(f"  flow:    {entry.name}")
     print(f"  code:    {flow_dir}")
     print(f"  config:  {cfg_path or '(none)'}")
 
@@ -369,7 +364,7 @@ def _cmd_flow_run(args: argparse.Namespace) -> int:
 
     result = mcp_run(
         root,
-        pipe=entry.pipe,
+        pipe=entry.name,
         flow=entry.name,
         targets=getattr(args, "targets", None) or None,
         cores=getattr(args, "cores", 1),
@@ -405,10 +400,10 @@ def _cmd_flow_log(args: argparse.Namespace) -> int:
     # Filter to this flow, most recent first
     flow_runs = [
         r for r in runs
-        if r.get("pipe") == entry.pipe and r.get("flow") == entry.name
+        if r.get("flow") == entry.name
     ]
     if not flow_runs:
-        print(f"No runs recorded for {entry.pipe}/{entry.name}", file=sys.stderr)
+        print(f"No runs recorded for {entry.name}", file=sys.stderr)
         return 1
 
     latest = flow_runs[-1]
@@ -437,7 +432,7 @@ def _cmd_flow_mods(args: argparse.Namespace) -> int:
         return 1
 
     if not entry.mods:
-        print(f"No mods defined for {entry.pipe}/{entry.name}")
+        print(f"No mods defined for {entry.name}")
         return 0
 
     for mod_name, mod in entry.mods.items():
@@ -482,13 +477,11 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
     root = Path(args.root) if args.root else _find_root()
     pipelines_dir = root / "code" / "pipelines" if (root / "code" / "pipelines").exists() else root / "pipelines"
 
-    flow_dir = pipelines_dir / args.pipe / args.flow
+    flow = args.flow
+    flow_dir = pipelines_dir / flow
     if flow_dir.exists():
         print(f"Flow directory already exists: {flow_dir}", file=sys.stderr)
         return 1
-
-    pipe = args.pipe
-    flow = args.flow
 
     # Create directory structure
     flow_dir.mkdir(parents=True)
@@ -499,7 +492,7 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
 
     # config.yml
     (flow_dir / "config.yml").write_text(
-        f"# config for {pipe}/{flow}\n"
+        f"# config for {flow}\n"
         f"input_dir: \"\"\n"
         f"output_dir: \"\"\n"
         f"registry: {{}}\n",
@@ -508,7 +501,7 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
 
     # Snakefile
     (flow_dir / "Snakefile").write_text(
-        f"# Snakefile for {pipe}/{flow}\n"
+        f"# Snakefile for {flow}\n"
         f"from pathlib import Path\n"
         f"\n"
         f"configfile: \"config.yml\"\n"
@@ -521,7 +514,7 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
 
     # Makefile (delegates to pipeio CLI)
     (flow_dir / "Makefile").write_text(
-        f"# Flow: {pipe}/{flow}\n"
+        f"# Flow: {flow}\n"
         f"# Notebook and pipeline operations delegate to pipeio CLI.\n"
         f"SHELL := /bin/bash\n"
         f"\n"
@@ -547,7 +540,7 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
 
     # notebook.yml (empty but valid)
     (flow_dir / "notebooks" / "notebook.yml").write_text(
-        f"# Notebook config for {pipe}/{flow}\n"
+        f"# Notebook config for {flow}\n"
         f"kernel: \"\"\n"
         f"publish:\n"
         f"  docs_dir: \"\"\n"
@@ -560,7 +553,7 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
     (flow_dir / "docs" / "index.md").write_text(
         f"# {flow}\n"
         f"\n"
-        f"Pipeline: `{pipe}/{flow}`\n"
+        f"Flow: `{flow}`\n"
         f"\n"
         f"## Mods\n"
         f"\n"
@@ -582,7 +575,7 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
         f"# %% [markdown]\n"
         f"# # Explore {flow.replace('_', ' ').title()}\n"
         f"#\n"
-        f"# Initial exploration notebook for {pipe}/{flow}.\n"
+        f"# Initial exploration notebook for {flow}.\n"
         f"\n"
         f"# %% [markdown]\n"
         f"# ## Setup\n"
@@ -605,7 +598,7 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
         "entries": [{
             "path": f"notebooks/.src/{nb_name}.py",
             "kind": "explore",
-            "description": f"Initial exploration for {pipe}/{flow}",
+            "description": f"Initial exploration for {flow}",
             "status": "draft",
             "pair_ipynb": True,
             "pair_myst": True,
@@ -630,8 +623,7 @@ def _cmd_flow_fork(args: argparse.Namespace) -> int:
 
     root = Path(args.root) if args.root else _find_root()
     result = mcp_flow_fork(
-        root, pipe=args.pipe, flow=args.flow,
-        new_flow=args.new_flow, new_pipe=getattr(args, "new_pipe", None),
+        root, flow=args.flow, new_flow=args.new_flow,
     )
     if "error" in result:
         print(result["error"], file=sys.stderr)
@@ -677,14 +669,13 @@ def _cmd_registry_scan(args: argparse.Namespace) -> int:
     registry = PipelineRegistry.scan(pipelines_dir, docs_dir=docs_dir, ignore=ignore)
 
     # Print summary
-    pipes = registry.list_pipes()
     flows = registry.list_flows()
     print(f"Scanned {pipelines_dir}")
     for f in flows:
         config = "config=yes" if f.config_path else "config=no"
         mods = f"mods={len(f.mods)}" if f.mods else ""
         docs = "docs=yes" if f.doc_path else ""
-        parts = [f"  pipe={f.pipe}", f"flow={f.name}", config]
+        parts = [f"  flow={f.name}", config]
         if mods:
             parts.append(mods)
         if docs:
@@ -697,7 +688,7 @@ def _cmd_registry_scan(args: argparse.Namespace) -> int:
     else:
         output = _pipeio_dir(root) / "registry.yml"
     registry.to_yaml(output)
-    print(f"Written: {output} ({len(pipes)} pipes, {len(flows)} flows)")
+    print(f"Written: {output} ({len(flows)} flows)")
     return 0
 
 
@@ -849,20 +840,19 @@ def _cmd_nb_lab(args: argparse.Namespace) -> int:
     from pipeio.notebook.lifecycle import nb_lab
 
     root = Path(args.root) if args.root else _find_root()
-    pipe = getattr(args, "pipe", None)
     flow = getattr(args, "flow", None)
     do_sync = getattr(args, "sync", False)
     refresh_only = getattr(args, "refresh", False)
 
-    # Auto-detect pipe/flow from cwd if not specified
-    if not pipe and not flow:
+    # Auto-detect flow from cwd if not specified
+    if not flow:
         detected = _detect_flow_from_cwd(root)
         if detected:
-            pipe, flow = detected
-            print(f"Detected flow: {pipe}/{flow}")
+            flow = detected
+            print(f"Detected flow: {flow}")
 
     try:
-        result = nb_lab(root, pipe=pipe, flow=flow, sync=do_sync)
+        result = nb_lab(root, flow=flow, sync=do_sync)
     except ImportError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -871,7 +861,7 @@ def _cmd_nb_lab(args: argparse.Namespace) -> int:
     lab_dir = result.get("lab_dir", "")
     print(f"Lab manifest: {lab_dir}  ({count} notebook(s) linked)")
     for item in result.get("linked", []):
-        print(f"  {item['pipe']}/{item['flow']}/{item['name']}")
+        print(f"  {item.get('flow', item.get('name', ''))}/{item['name']}")
     for s in result.get("stale_cleaned", []):
         print(f"  removed stale: {s}")
 
@@ -1012,13 +1002,13 @@ def _cmd_registry_deregister(args: argparse.Namespace) -> int:
 
     registry = PipelineRegistry.from_yaml(reg_path)
     try:
-        removed = registry.remove(args.pipe, args.flow)
+        removed = registry.remove(args.flow)
     except KeyError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     registry.to_yaml(reg_path)
-    print(f"Deregistered: pipe={removed.pipe} flow={removed.name}")
+    print(f"Deregistered: flow={removed.name}")
     print(f"  code_path: {removed.code_path}")
     if removed.mods:
         print(f"  mods: {', '.join(removed.mods.keys())}")
@@ -1044,17 +1034,13 @@ def main(argv: list[str] | None = None) -> int:
     flow_sub = flow_p.add_subparsers(dest="flow_command")
 
     flow_list = flow_sub.add_parser("list", help="List all flows")
-    flow_list.add_argument("--pipe", help="Filter by pipe name")
 
     flow_new = flow_sub.add_parser("new", help="Scaffold a new flow")
-    flow_new.add_argument("pipe", help="Pipeline name")
     flow_new.add_argument("flow", help="Flow name")
 
     flow_fork_p = flow_sub.add_parser("fork", help="Fork (copy) an existing flow")
-    flow_fork_p.add_argument("pipe", help="Source pipeline name")
     flow_fork_p.add_argument("flow", help="Source flow name")
     flow_fork_p.add_argument("new_flow", help="Name for the forked flow")
-    flow_fork_p.add_argument("--new-pipe", help="Target pipe (default: same as source)")
 
     flow_ids = flow_sub.add_parser("ids", help="Print flow names (for shell completion)")
 
@@ -1122,7 +1108,6 @@ def main(argv: list[str] | None = None) -> int:
     nb_migrate_p.add_argument("--yes", action="store_true", help="Execute migration (default: dry run)")
 
     nb_lab_p = nb_sub.add_parser("lab", help="Build symlink manifest and launch Jupyter Lab")
-    nb_lab_p.add_argument("--pipe", help="Filter to a specific pipeline")
     nb_lab_p.add_argument("--flow", help="Filter to a specific flow")
     nb_lab_p.add_argument("--sync", action="store_true", help="Sync py→ipynb before linking")
     nb_lab_p.add_argument("--refresh", action="store_true", help="Refresh manifest only (no Jupyter launch)")
@@ -1140,7 +1125,6 @@ def main(argv: list[str] | None = None) -> int:
     reg_val.add_argument("--registry", help="Registry YAML path")
 
     reg_dereg = reg_sub.add_parser("deregister", help="Remove a flow from the registry")
-    reg_dereg.add_argument("pipe", help="Pipeline name")
     reg_dereg.add_argument("flow", help="Flow name")
 
     # pipeio docs {collect,nav}
@@ -1244,7 +1228,3 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

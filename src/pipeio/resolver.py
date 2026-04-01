@@ -209,8 +209,7 @@ class PipelineContext:
     @classmethod
     def from_registry(
         cls,
-        pipe: str,
-        flow: str | None = None,
+        flow: str,
         *,
         root: Path,
         registry: Any | None = None,
@@ -226,12 +225,12 @@ class PipelineContext:
                 )
             registry = PipelineRegistry.from_yaml(reg_path)
 
-        entry = registry.get(pipe, flow)
+        entry = registry.get(flow)
 
         config_path = entry.config_path
         if config_path is None:
             raise FileNotFoundError(
-                f"No config_path for flow {entry.pipe}/{entry.name}"
+                f"No config_path for flow {entry.name}"
             )
 
         cfg_path = Path(config_path)
@@ -244,7 +243,7 @@ class PipelineContext:
             root=root,
             resolver=resolver,
             config=flow_config,
-            meta={"pipe": entry.pipe, "flow": entry.name},
+            meta={"flow": entry.name},
         )
 
     def session(self, **entities: str) -> Session:

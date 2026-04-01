@@ -63,7 +63,7 @@ def docs_collect(root: Path) -> list[str]:
         if not flow_dir.is_dir():
             continue
 
-        target = docs_base / entry.pipe / entry.name
+        target = docs_base / entry.name
 
         # --- 1. Collect hand-written docs ---
         flow_docs = flow_dir / "docs"

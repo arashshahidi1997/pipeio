@@ -847,7 +847,6 @@ def nb_migrate(root: Path, *, dry_run: bool = True) -> list[dict[str, Any]]:
 def nb_lab(
     root: Path,
     *,
-    pipe: str | None = None,
     flow: str | None = None,
     lab_dir: Path | None = None,
     sync: bool = False,
@@ -855,7 +854,7 @@ def nb_lab(
 ) -> dict[str, Any]:
     """Build a symlink manifest of active .ipynb notebooks and return its state.
 
-    Creates ``<lab_dir>/<pipe>/<flow>/<name>.ipynb`` symlinks pointing back to
+    Creates ``<lab_dir>/<flow>/<name>.ipynb`` symlinks pointing back to
     the real notebook files.  Stale symlinks (pointing to removed notebooks)
     are cleaned up automatically.
 
@@ -863,8 +862,6 @@ def nb_lab(
     ----------
     root : Path
         Project root.
-    pipe : str | None
-        Filter to a specific pipeline.
     flow : str | None
         Filter to a specific flow.
     lab_dir : Path | None
@@ -884,8 +881,8 @@ def nb_lab(
     linked: list[dict[str, str]] = []
     synced: list[str] = []
 
-    # Build flow_root → (pipe, flow) lookup from registry
-    flow_lookup: dict[str, tuple[str, str]] = {}
+    # Build flow_root → flow_name lookup from registry
+    flow_lookup: dict[str, str] = {}
     try:
         from pipeio.registry import PipelineRegistry
         for reg_candidate in (
@@ -898,28 +895,20 @@ def nb_lab(
                     code_path = Path(entry.code_path)
                     if not code_path.is_absolute():
                         code_path = root / code_path
-                    flow_lookup[str(code_path.resolve())] = (entry.pipe, entry.name)
+                    flow_lookup[str(code_path.resolve())] = entry.name
                 break
     except Exception:
         pass
 
     for flow_root, cfg in find_notebook_configs(root):
-        # Look up pipe/flow from registry
+        # Look up flow name from registry
         resolved_root = str(flow_root.resolve())
         if resolved_root in flow_lookup:
-            entry_pipe, entry_flow = flow_lookup[resolved_root]
+            entry_flow = flow_lookup[resolved_root]
         else:
-            # Fallback: derive from path
-            try:
-                rel = flow_root.relative_to(root)
-                parts = rel.parts
-            except ValueError:
-                continue
-            entry_pipe = parts[-2] if len(parts) >= 2 else parts[0] if parts else "unknown"
-            entry_flow = parts[-1] if len(parts) >= 1 else "unknown"
+            # Fallback: derive from directory name
+            entry_flow = flow_root.name
 
-        if pipe and entry_pipe != pipe:
-            continue
         if flow and entry_flow != flow:
             continue
 
@@ -944,8 +933,8 @@ def nb_lab(
             if not ipynb_path.exists():
                 continue
 
-            # Create symlink: lab_dir/<pipe>/<flow>/<name>.ipynb
-            link_dir = lab_dir / entry_pipe / entry_flow
+            # Create symlink: lab_dir/<flow>/<name>.ipynb
+            link_dir = lab_dir / entry_flow
             link_dir.mkdir(parents=True, exist_ok=True)
             link_path = link_dir / ipynb_path.name
 
@@ -958,7 +947,6 @@ def nb_lab(
 
             item: dict[str, str] = {
                 "name": py_path.stem,
-                "pipe": entry_pipe,
                 "flow": entry_flow,
                 "link": str(link_path.relative_to(lab_dir)),
                 "target": str(ipynb_path),

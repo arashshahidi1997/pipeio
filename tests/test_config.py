@@ -124,7 +124,6 @@ def test_validate_config_empty_group():
     cfg = FlowConfig(
         input_dir="raw",
         output_dir="out",
-        registry={"empty": RegistryGroup()},
-    )
+        registry={"empty": RegistryGroup()})
     issues = cfg.validate_config()
     assert any("no members" in i for i in issues)

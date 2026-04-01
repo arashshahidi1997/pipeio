@@ -1,7 +1,8 @@
-"""Pipe / flow / mod registry: scan, load, validate, query.
+"""Flow / mod registry: scan, load, validate, query.
 
-The registry maps the three-level hierarchy (pipe / flow / mod) to filesystem
-paths, config files, and documentation locations.
+The registry maps flows and their mods to filesystem paths, config files,
+and documentation locations.  Each flow is a self-contained unit of work;
+the old "pipe" grouping layer has been removed.
 """
 
 from __future__ import annotations
@@ -45,7 +46,6 @@ class FlowEntry(BaseModel):
     """A flow: a concrete workflow with its own Snakefile and config."""
 
     name: str
-    pipe: str
     code_path: str
     config_path: str | None = None
     doc_path: str | None = None
@@ -60,9 +60,25 @@ class PipelineRegistry(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: Path) -> PipelineRegistry:
-        """Load a registry from a YAML file."""
+        """Load a registry from a YAML file.
+
+        Backward compat: if old YAML has ``"pipe/flow"`` keys or entries
+        with a ``pipe`` field, the pipe part is silently discarded.
+        """
         with open(path) as fh:
             raw = yaml.safe_load(fh) or {}
+
+        # Migrate old-format keys: "pipe/flow" → flow name
+        if "flows" in raw and isinstance(raw["flows"], dict):
+            migrated: dict[str, Any] = {}
+            for key, entry in raw["flows"].items():
+                if isinstance(entry, dict):
+                    entry.pop("pipe", None)  # drop legacy pipe field
+                # Use flow part of "pipe/flow" key, or key as-is
+                new_key = key.rsplit("/", 1)[-1] if "/" in key else key
+                migrated[new_key] = entry
+            raw["flows"] = migrated
+
         return cls.model_validate(raw)
 
     def to_yaml(self, path: Path) -> None:
@@ -78,66 +94,36 @@ class PipelineRegistry(BaseModel):
             fh.write("# pipeio pipeline registry\n")
             yaml.safe_dump(payload, fh, sort_keys=False, default_flow_style=False)
 
-    def list_pipes(self) -> list[str]:
-        """Return sorted unique pipe names."""
-        return sorted({f.pipe for f in self.flows.values()})
-
-    def list_flows(self, pipe: str | None = None) -> list[FlowEntry]:
-        """Return flows, optionally filtered by pipe."""
+    def list_flows(self, prefix: str | None = None) -> list[FlowEntry]:
+        """Return flows, optionally filtered by name prefix."""
         entries = list(self.flows.values())
-        if pipe:
-            entries = [f for f in entries if f.pipe == pipe]
+        if prefix:
+            entries = [f for f in entries if f.name.startswith(prefix)]
         return entries
 
-    def remove(self, pipe: str, flow: str) -> FlowEntry:
+    def remove(self, flow: str) -> FlowEntry:
         """Remove a flow from the registry and return the removed entry."""
-        key = f"{pipe}/{flow}"
-        if key not in self.flows:
-            # Try matching by pipe+name fields
+        if flow not in self.flows:
+            # Try matching by name field
             for k, entry in self.flows.items():
-                if entry.pipe == pipe and entry.name == flow:
-                    key = k
-                    break
-            else:
-                raise KeyError(f"Flow not found: pipe={pipe!r} flow={flow!r}")
-        return self.flows.pop(key)
+                if entry.name == flow:
+                    return self.flows.pop(k)
+            raise KeyError(f"Flow not found: {flow!r}")
+        return self.flows.pop(flow)
 
-    def get(self, pipe: str, flow: str | None = None) -> FlowEntry:
-        """Resolve a (pipe, flow) pair to a FlowEntry.
+    def get(self, flow: str) -> FlowEntry:
+        """Look up a flow by name.
 
-        Flow resolution logic (matching pixecog):
-        - If *flow* is given explicitly, look it up directly.
-        - If omitted and the pipe has exactly one flow, auto-select it.
-        - If omitted and a flow with the same name as the pipe exists, use it.
-        - Otherwise raise ValueError listing the available flows.
+        Raises KeyError if the flow is not found.
         """
-        pipe_flows = [f for f in self.flows.values() if f.pipe == pipe]
-        if not pipe_flows:
-            known = ", ".join(self.list_pipes()) or "(none)"
-            raise KeyError(f"Unknown pipe: {pipe!r}. Known: {known}")
-
-        if flow is not None:
-            for f in pipe_flows:
-                if f.name == flow:
-                    return f
-            known = ", ".join(f.name for f in pipe_flows)
-            raise KeyError(
-                f"Unknown flow for pipe={pipe!r}: {flow!r}. Known: {known}"
-            )
-
-        # Auto-select: single flow
-        if len(pipe_flows) == 1:
-            return pipe_flows[0]
-
-        # Auto-select: flow name == pipe name
-        for f in pipe_flows:
-            if f.name == pipe:
-                return f
-
-        known = ", ".join(f.name for f in pipe_flows)
-        raise ValueError(
-            f"flow is required for pipe={pipe!r}. Known flows: {known}"
-        )
+        if flow in self.flows:
+            return self.flows[flow]
+        # Fallback: match by entry.name
+        for entry in self.flows.values():
+            if entry.name == flow:
+                return entry
+        known = ", ".join(sorted(self.flows.keys())) or "(none)"
+        raise KeyError(f"Unknown flow: {flow!r}. Known: {known}")
 
     @classmethod
     def scan(
@@ -148,25 +134,28 @@ class PipelineRegistry(BaseModel):
     ) -> PipelineRegistry:
         """Discover flows from the filesystem and return a new registry.
 
-        Scans *pipelines_dir* for pipe/flow directories containing Snakefile
-        or config.yml. Optionally cross-references *docs_dir* for doc paths.
+        Scans *pipelines_dir* for directories containing Snakefile or
+        config.yml. Optionally cross-references *docs_dir* for doc paths.
+
+        For nested dirs like ``preprocess/ieeg/``, the flow name is the
+        deepest directory name (e.g. ``ieeg``).  For flat dirs like
+        ``brainstate/``, flow name = dir name.
 
         Parameters
         ----------
         ignore : set[str] | None
-            Flow keys (``"pipe/flow"``) to skip during scan.
+            Flow names to skip during scan.
         """
         flows: dict[str, FlowEntry] = {}
 
         if not pipelines_dir.exists():
             return cls(flows={})
 
-        for pipe_dir in sorted(
+        for top_dir in sorted(
             p for p in pipelines_dir.iterdir()
             if p.is_dir() and not p.name.startswith("_") and p.name != "__pycache__"
         ):
-            pipe = pipe_dir.name
-            discovered = _discover_flows(pipe_dir, pipe, docs_dir)
+            discovered = _discover_flows(top_dir, docs_dir)
             if ignore:
                 discovered = {k: v for k, v in discovered.items() if k not in ignore}
             flows.update(discovered)
@@ -177,21 +166,19 @@ class PipelineRegistry(BaseModel):
         """Validate registry consistency. Returns errors and warnings."""
         errors: list[str] = []
         warnings: list[str] = []
-        seen_ids: set[str] = set()
+        seen_names: set[str] = set()
 
         for key, entry in self.flows.items():
-            flow_id = f"{entry.pipe}/{entry.name}"
+            flow_id = entry.name
 
-            # Slug checks
-            if not slug_ok(entry.pipe):
-                warnings.append(f"Non-canonical pipe slug: {entry.pipe!r}")
+            # Slug check
             if not slug_ok(entry.name):
                 warnings.append(f"Non-canonical flow slug: {entry.name!r}")
 
-            # ID uniqueness
-            if flow_id in seen_ids:
-                errors.append(f"Duplicate flow ID: {flow_id}")
-            seen_ids.add(flow_id)
+            # Name uniqueness
+            if flow_id in seen_names:
+                errors.append(f"Duplicate flow name: {flow_id}")
+            seen_names.add(flow_id)
 
             # Filesystem checks (only if root provided)
             if root:
@@ -223,42 +210,43 @@ class PipelineRegistry(BaseModel):
 
 
 def _discover_flows(
-    pipe_dir: Path,
-    pipe: str,
+    top_dir: Path,
     docs_dir: Path | None,
 ) -> dict[str, FlowEntry]:
-    """Discover flows within a single pipe directory."""
+    """Discover flows within a directory.
+
+    For a flat directory (has Snakefile at root), flow name = dir name.
+    For nested dirs, each child with a Snakefile becomes a flow keyed by
+    the child's name.
+    """
     flows: dict[str, FlowEntry] = {}
 
-    # Check if pipe_dir itself is a flow (has Snakefile or config.yml at root)
-    if (pipe_dir / "Snakefile").exists() or (pipe_dir / "config.yml").exists():
-        key = pipe
-        doc_path = _find_doc_path(docs_dir, pipe, pipe) if docs_dir else None
-        config_path = _resolve_config_path(pipe_dir)
-        flows[key] = FlowEntry(
-            name=pipe,
-            pipe=pipe,
-            code_path=str(pipe_dir),
+    # Check if top_dir itself is a flow (has Snakefile or config.yml at root)
+    if (top_dir / "Snakefile").exists() or (top_dir / "config.yml").exists():
+        name = top_dir.name
+        doc_path = _find_doc_path(docs_dir, name) if docs_dir else None
+        config_path = _resolve_config_path(top_dir)
+        flows[name] = FlowEntry(
+            name=name,
+            code_path=str(top_dir),
             config_path=config_path,
             doc_path=doc_path,
-            mods=_discover_mods(pipe_dir),
-            app_type=_detect_app_type(pipe_dir),
+            mods=_discover_mods(top_dir),
+            app_type=_detect_app_type(top_dir),
         )
 
     # Check subdirectories for additional flows
-    for child in sorted(p for p in pipe_dir.iterdir() if p.is_dir()):
+    for child in sorted(p for p in top_dir.iterdir() if p.is_dir()):
         if child.name.startswith("_") or child.name == "__pycache__":
             continue
         if (child / "Snakefile").exists() or (child / "config.yml").exists():
-            flow = child.name
-            key = f"{pipe}/{flow}" if flow != pipe else pipe
-            if key in flows:
+            name = child.name
+            if name in flows:
                 continue
-            doc_path = _find_doc_path(docs_dir, pipe, flow) if docs_dir else None
+            doc_path = _find_doc_path(docs_dir, name) if docs_dir else None
             config_path = _resolve_config_path(child)
-            flows[key] = FlowEntry(
-                name=flow,
-                pipe=pipe,
+            flows[name] = FlowEntry(
+                name=name,
                 code_path=str(child),
                 config_path=config_path,
                 doc_path=doc_path,
@@ -266,21 +254,19 @@ def _discover_flows(
                 app_type=_detect_app_type(child),
             )
 
-    # Check for .smk files at pipe root
-    for smk in sorted(pipe_dir.glob("*.smk")):
-        flow = smk.stem
-        key = f"{pipe}/{flow}" if flow != pipe else pipe
-        if key in flows:
+    # Check for .smk files at top_dir root
+    for smk in sorted(top_dir.glob("*.smk")):
+        name = smk.stem
+        if name in flows:
             continue
-        doc_path = _find_doc_path(docs_dir, pipe, flow) if docs_dir else None
-        config_path = _resolve_config_path(pipe_dir)
-        flows[key] = FlowEntry(
-            name=flow,
-            pipe=pipe,
-            code_path=str(pipe_dir),
+        doc_path = _find_doc_path(docs_dir, name) if docs_dir else None
+        config_path = _resolve_config_path(top_dir)
+        flows[name] = FlowEntry(
+            name=name,
+            code_path=str(top_dir),
             config_path=config_path,
             doc_path=doc_path,
-            app_type=_detect_app_type(pipe_dir),
+            app_type=_detect_app_type(top_dir),
         )
 
     return flows
@@ -356,17 +342,19 @@ def _discover_mods(flow_dir: Path) -> dict[str, ModEntry]:
     return mods
 
 
-def _find_doc_path(docs_dir: Path | None, pipe: str, flow: str) -> str | None:
-    """Look for documentation for a pipe/flow in the docs directory."""
+def _find_doc_path(docs_dir: Path | None, flow: str) -> str | None:
+    """Look for documentation for a flow in the docs directory."""
     if docs_dir is None or not docs_dir.exists():
         return None
-    # Convention: docs/pipe-<pipe>/flow-<flow>/
-    flow_doc = docs_dir / f"pipe-{pipe}" / f"flow-{flow}"
+    # New convention: docs/flow-<flow>/
+    flow_doc = docs_dir / f"flow-{flow}"
     if flow_doc.is_dir():
         return str(flow_doc)
-    # Fallback: docs/pipe-<pipe>/ (when flow == pipe)
-    if flow == pipe:
-        pipe_doc = docs_dir / f"pipe-{pipe}"
-        if pipe_doc.is_dir():
-            return str(pipe_doc)
+    # Legacy convention: docs/pipe-<flow>/flow-<flow>/ or docs/pipe-<flow>/
+    legacy_nested = docs_dir / f"pipe-{flow}" / f"flow-{flow}"
+    if legacy_nested.is_dir():
+        return str(legacy_nested)
+    legacy_flat = docs_dir / f"pipe-{flow}"
+    if legacy_flat.is_dir():
+        return str(legacy_flat)
     return None

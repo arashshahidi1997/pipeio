@@ -14,8 +14,7 @@ from pipeio.notebook.analyze import (
     _extract_run_card,
     _extract_sections,
     _split_cells,
-    analyze_notebook,
-)
+    analyze_notebook)
 import ast
 
 
