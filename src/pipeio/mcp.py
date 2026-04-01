@@ -1517,18 +1517,27 @@ def mcp_nb_publish(
     pipe: str,
     flow: str,
     name: str,
+    format: str = "",
 ) -> dict[str, Any]:
-    """Publish a notebook's myst markdown to the docs tree.
+    """Publish a notebook to the docs tree.
 
-    Copies the ``.md`` (myst) file from the flow's notebooks directory
-    to ``docs/pipelines/<pipe>/<flow>/notebooks/nb-<name>.md``.
+    Publishes to ``docs/pipelines/<pipe>/<flow>/notebooks/``.
+    Supports both MyST markdown and HTML output.
+
+    When *format* is empty, publishes whatever the notebook.yml entry
+    has enabled (publish_myst and/or publish_html).
 
     Args:
         root: Project root.
         pipe: Pipeline name.
         flow: Flow name.
         name: Notebook basename (without extension).
+        format: Force a specific format ('myst', 'html', or '' for auto).
     """
+    import shutil
+
+    from pipeio.notebook.config import NotebookConfig
+    from pipeio.notebook.lifecycle import _nb_output_paths, _nbconvert_html
     from pipeio.registry import PipelineRegistry
 
     registry_path = _find_registry(root)
@@ -1545,28 +1554,75 @@ def mcp_nb_publish(
     if not flow_dir.is_absolute():
         flow_dir = root / flow_dir
 
-    myst_src = flow_dir / "notebooks" / f"{name}.md"
-    if not myst_src.exists():
-        return {
-            "error": f"MyST file not found: notebooks/{name}.md",
-            "hint": "Run pipeio_nb_sync first to generate the .md file.",
-        }
+    # Resolve notebook paths
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        # Try to construct the path for output resolution
+        py_path = flow_dir / "notebooks" / ".src" / f"{name}.py"
 
-    import shutil
+    ipynb_path, myst_path = _nb_output_paths(py_path)
+
+    # Determine what to publish from notebook.yml config
+    publish_myst = True
+    publish_html = False
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+            for nb in nb_cfg.entries:
+                if Path(nb.path).stem == name:
+                    publish_myst = nb.publish_myst
+                    publish_html = nb.publish_html
+                    break
+        except Exception:
+            pass
+
+    # Override with explicit format
+    if format == "myst":
+        publish_myst, publish_html = True, False
+    elif format == "html":
+        publish_myst, publish_html = False, True
 
     dest_dir = root / "docs" / "pipelines" / pipe / flow / "notebooks"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"nb-{name}.md"
-    shutil.copy2(myst_src, dest)
+    published: list[str] = []
 
-    try:
-        result_path = str(dest.relative_to(root))
-    except ValueError:
-        result_path = str(dest)
+    if publish_myst:
+        if myst_path.exists():
+            dest = dest_dir / f"nb-{name}.md"
+            shutil.copy2(myst_path, dest)
+            try:
+                published.append(str(dest.relative_to(root)))
+            except ValueError:
+                published.append(str(dest))
+        else:
+            return {
+                "error": f"MyST file not found: {myst_path}",
+                "hint": "Run pipeio_nb_sync first to generate the .md file.",
+            }
+
+    if publish_html:
+        if ipynb_path.exists():
+            dest = dest_dir / f"nb-{name}.html"
+            _nbconvert_html(ipynb_path, dest)
+            try:
+                published.append(str(dest.relative_to(root)))
+            except ValueError:
+                published.append(str(dest))
+        else:
+            return {
+                "error": f"ipynb file not found: {ipynb_path}",
+                "hint": "Run pipeio_nb_sync first to generate the .ipynb file.",
+            }
+
+    if not published:
+        return {
+            "error": "Nothing to publish (publish_myst and publish_html both disabled)",
+            "hint": "Set publish_myst or publish_html in notebook.yml, or pass format='html'.",
+        }
 
     return {
-        "published": result_path,
-        "source": str(myst_src.relative_to(root)),
+        "published": published,
         "pipe": pipe,
         "flow": flow,
         "name": name,
