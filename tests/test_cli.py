@@ -43,11 +43,7 @@ def test_flow_list_with_flows(tmp_path, capsys):
     main(["init", "--root", str(tmp_path)])
     # Manually add a flow to the registry
     reg_path = tmp_path / ".pipeio" / "registry.yml"
-    reg_path.write_text(yaml.safe_dump({
-        "flows": {
-            "test": {
-                "name": "test",
-                "pipe": "test",
+    reg_path.write_text(yaml.safe_dump({"flows": {"test": {"name": "test",
                 "code_path": "code/pipelines/test",
             },
         },
@@ -63,7 +59,7 @@ def test_flow_new(tmp_path, capsys):
     ret = main(["flow", "--root", str(tmp_path), "new", "mypipe", "myflow"])
     assert ret == 0
     # Check flow scaffold was created
-    flow_dir = tmp_path / "pipelines" / "mypipe" / "myflow"
+    flow_dir = tmp_path / "pipelines" / "myflow"
     assert flow_dir.is_dir()
     assert (flow_dir / "config.yml").exists()
     assert (flow_dir / "Snakefile").exists()

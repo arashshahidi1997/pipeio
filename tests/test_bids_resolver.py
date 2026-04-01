@@ -23,21 +23,14 @@ def _mock_snakebids():
 
 
 def _make_config(tmp_path: Path) -> Path:
-    cfg = {
-        "output_dir": "results",
-        "registry": {
-            "deriv_preproc": {
-                "bids": {
-                    "root": "derivatives/preproc",
+    cfg = {"output_dir": "results",
+        "registry": {"deriv_preproc": {"bids": {"root": "derivatives/preproc",
                     "datatype": "ieeg",
                 },
-                "members": {
-                    "cleaned": {
-                        "suffix": "cleaned",
+                "members": {"cleaned": {"suffix": "cleaned",
                         "extension": ".edf",
                     },
-                    "report": {
-                        "suffix": "report",
+                    "report": {"suffix": "report",
                         "extension": ".html",
                     },
                 },

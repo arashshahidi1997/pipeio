@@ -13,18 +13,15 @@ def _sample_flow_config() -> FlowConfig:
     return FlowConfig(
         input_dir="raw",
         output_dir="derivatives/preprocess",
-        registry={
-            "raw_zarr": RegistryGroup(
+        registry={"raw_zarr": RegistryGroup(
                 base_input="ieeg",
                 bids={"root": "raw_zarr", "datatype": "ieeg"},
-                members={
-                    "zarr": RegistryMember(suffix="ieeg", extension=".zarr"),
+                members={"zarr": RegistryMember(suffix="ieeg", extension=".zarr"),
                 }),
             "badlabel": RegistryGroup(
                 base_input="ieeg",
                 bids={"root": "badlabel", "datatype": "ieeg"},
-                members={
-                    "npy": RegistryMember(suffix="ieeg", extension=".npy"),
+                members={"npy": RegistryMember(suffix="ieeg", extension=".npy"),
                     "featuremap": RegistryMember(suffix="ieeg", extension=".featuremap.png"),
                 }),
         })
@@ -161,12 +158,9 @@ class TestPipelineContext:
         # Write a config.yml
         cfg_path = tmp_path / "code" / "pipelines" / "preprocess" / "config.yml"
         cfg_path.parent.mkdir(parents=True)
-        cfg_path.write_text(yaml.safe_dump({
-            "input_dir": "raw",
+        cfg_path.write_text(yaml.safe_dump({"input_dir": "raw",
             "output_dir": "derivatives/preprocess",
-            "registry": {
-                "badlabel": {
-                    "bids": {"root": "badlabel"},
+            "registry": {"badlabel": {"bids": {"root": "badlabel"},
                     "members": {"npy": {"suffix": "ieeg", "extension": ".npy"}},
                 },
             },
@@ -176,10 +170,7 @@ class TestPipelineContext:
         reg_dir = tmp_path / ".pipeio"
         reg_dir.mkdir()
         reg_path = reg_dir / "registry.yml"
-        reg_path.write_text(yaml.safe_dump({
-            "flows": {
-                "preprocess": {
-                    "name": "preprocess",
+        reg_path.write_text(yaml.safe_dump({"flows": {"preprocess": {"name": "preprocess",
                     "code_path": "code/pipelines/preprocess",
                     "config_path": "code/pipelines/preprocess/config.yml",
                 },

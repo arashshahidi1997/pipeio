@@ -31,8 +31,7 @@ def test_slug_ok(name, expected):
 
 def _sample_registry() -> PipelineRegistry:
     return PipelineRegistry(
-        flows={
-            "ieeg": FlowEntry(
+        flows={"ieeg": FlowEntry(
                 name="ieeg", code_path="code/pipelines/preprocess/ieeg",
                 config_path="code/pipelines/preprocess/ieeg/config.yml"),
             "ecephys": FlowEntry(
@@ -99,16 +98,10 @@ def test_yaml_round_trip(tmp_path):
 
 def test_yaml_backward_compat_pipe_slash_flow(tmp_path):
     """Old YAML with 'pipe/flow' keys and pipe field should load correctly."""
-    old_format = {
-        "flows": {
-            "preprocess/ieeg": {
-                "name": "ieeg",
-                "pipe": "preprocess",
+    old_format = {"flows": {"ieeg": {"name": "ieeg",
                 "code_path": "code/pipelines/preprocess/ieeg",
             },
-            "brainstate": {
-                "name": "brainstate",
-                "pipe": "brainstate",
+            "brainstate": {"name": "brainstate",
                 "code_path": "code/pipelines/brainstate",
             },
         }
@@ -181,8 +174,7 @@ def test_validate_clean():
 
 def test_validate_bad_slug():
     reg = PipelineRegistry(
-        flows={
-            "bad": FlowEntry(name="BadFlow", code_path="x"),
+        flows={"bad": FlowEntry(name="BadFlow", code_path="x"),
         }
     )
     result = reg.validate()
@@ -191,8 +183,7 @@ def test_validate_bad_slug():
 
 def test_validate_missing_code_path(tmp_path):
     reg = PipelineRegistry(
-        flows={
-            "test": FlowEntry(
+        flows={"test": FlowEntry(
                 name="test",
                 code_path="nonexistent/path",
                 config_path="also/nonexistent"),

@@ -36,11 +36,9 @@ def _scaffold_project(root: Path, *, under_projio: bool = False) -> Path:
     # Create notebook config + py file
     nb_dir = flow_dir / "notebooks"
     nb_dir.mkdir()
-    nb_cfg = {
-        "publish": {"format": "html"},
+    nb_cfg = {"publish": {"format": "html"},
         "entries": [
-            {
-                "path": "notebooks/analysis.py",
+            {"path": "notebooks/analysis.py",
                 "pair_ipynb": True,
                 "publish_html": True,
             }
@@ -50,11 +48,7 @@ def _scaffold_project(root: Path, *, under_projio: bool = False) -> Path:
     (nb_dir / "analysis.py").write_text("# %% [markdown]\n# Analysis\n# %%\nx = 1\n", encoding="utf-8")
 
     # Write registry
-    reg = {
-        "flows": {
-            "denoise": {
-                "name": "denoise",
-                "pipe": "preproc",
+    reg = {"flows": {"denoise": {"name": "denoise",
                 "code_path": "code/pipelines/preproc/denoise",
                 "config_path": "code/pipelines/preproc/denoise/config.yml",
             }
@@ -181,8 +175,7 @@ def test_docs_collect_publishes_html(tmp_path):
     import json
     flow_dir = tmp_path / "code" / "pipelines" / "denoise"
     ipynb = flow_dir / "notebooks" / "analysis.ipynb"
-    nb_data = {
-        "nbformat": 4,
+    nb_data = {"nbformat": 4,
         "nbformat_minor": 5,
         "metadata": {"kernelspec": {"name": "python3"}},
         "cells": [{"cell_type": "code", "source": "x = 1", "metadata": {}, "outputs": [], "execution_count": None}],
@@ -242,7 +235,7 @@ def test_docs_nav_generates_yaml(tmp_path):
 
 
 def test_docs_nav_includes_notebooks(tmp_path):
-    target = tmp_path / "docs" / "pipelines" / "denoise" / "notebooks"
+    target = tmp_path / "docs" / "pipelines" / "notebooks"
     target.mkdir(parents=True)
     (target / "analysis.html").touch()
 

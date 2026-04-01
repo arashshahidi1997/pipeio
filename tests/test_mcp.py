@@ -36,10 +36,7 @@ def _scaffold_project(root: Path) -> Path:
     (docs_dir / "mod-filter.md").write_text("# Filter\n", encoding="utf-8")
 
     # Write registry
-    reg = {
-        "flows": {
-            "denoise": {
-                "name": "denoise",
+    reg = {"flows": {"denoise": {"name": "denoise",
                 "flow": "denoise",
                 "code_path": "code/pipelines/preproc/denoise",
                 "config_path": "code/pipelines/preproc/denoise/config.yml",
@@ -227,16 +224,11 @@ def _scaffold_project_with_mods(root: Path) -> Path:
         "      cleaned: {suffix: cleaned, extension: .fif}\n",
         encoding="utf-8")
 
-    reg = {
-        "flows": {
-            "denoise": {
-                "name": "denoise",
+    reg = {"flows": {"denoise": {"name": "denoise",
                 "flow": "denoise",
                 "code_path": "code/pipelines/preproc/denoise",
                 "config_path": "code/pipelines/preproc/denoise/config.yml",
-                "mods": {
-                    "filter": {
-                        "name": "filter",
+                "mods": {"filter": {"name": "filter",
                         "rules": ["filter_raw", "filter_notch"],
                         "doc_path": None,
                     }
@@ -451,10 +443,7 @@ def _scaffold_config_project(root: Path, config_text: str = _CONFIG_WITH_PYBIDS)
     flow_dir.mkdir(parents=True)
     (flow_dir / "config.yml").write_text(config_text, encoding="utf-8")
 
-    reg = {
-        "flows": {
-            "denoise": {
-                "name": "denoise",
+    reg = {"flows": {"denoise": {"name": "denoise",
                 "flow": "denoise",
                 "code_path": "code/pipelines/preproc/denoise",
                 "config_path": "code/pipelines/preproc/denoise/config.yml",
@@ -561,9 +550,7 @@ def test_mcp_config_patch_invalid_base_input(tmp_path):
     from pipeio.mcp import mcp_config_patch
 
     _scaffold_config_project(tmp_path)
-    new_group = {
-        "new_group": {
-            "base_input": "nonexistent",
+    new_group = {"new_group": {"base_input": "nonexistent",
             "bids": {"root": "output_dir"},
             "members": {"out": {"suffix": "eeg", "extension": ".fif"}},
         }
@@ -578,9 +565,7 @@ def test_mcp_config_patch_missing_suffix(tmp_path):
     from pipeio.mcp import mcp_config_patch
 
     _scaffold_config_project(tmp_path)
-    new_group = {
-        "bad_group": {
-            "base_input": "ieeg",
+    new_group = {"bad_group": {"base_input": "ieeg",
             "members": {"out": {"extension": ".fif"}},  # no suffix
         }
     }
@@ -594,9 +579,7 @@ def test_mcp_config_patch_produces_diff(tmp_path):
     from pipeio.mcp import mcp_config_patch
 
     _scaffold_config_project(tmp_path)
-    new_group = {
-        "gamma_power": {
-            "base_input": "ieeg",
+    new_group = {"gamma_power": {"base_input": "ieeg",
             "bids": {"root": "output_dir", "datatype": "ieeg"},
             "members": {"npy": {"suffix": "gamma", "extension": ".npy"}},
         }
@@ -616,9 +599,7 @@ def test_mcp_config_patch_not_applied_by_default(tmp_path):
     cfg_path = tmp_path / "code" / "pipelines" / "denoise" / "config.yml"
     original = cfg_path.read_text()
 
-    new_group = {
-        "extra": {
-            "base_input": "ieeg",
+    new_group = {"extra": {"base_input": "ieeg",
             "members": {"out": {"suffix": "out", "extension": ".npy"}},
         }
     }
@@ -633,9 +614,7 @@ def test_mcp_config_patch_apply_writes_file(tmp_path):
     _scaffold_config_project(tmp_path)
     cfg_path = tmp_path / "code" / "pipelines" / "denoise" / "config.yml"
 
-    new_group = {
-        "extra": {
-            "base_input": "ieeg",
+    new_group = {"extra": {"base_input": "ieeg",
             "members": {"out": {"suffix": "out", "extension": ".npy"}},
         }
     }
@@ -669,9 +648,7 @@ def test_mcp_config_patch_preserves_anchors(tmp_path):
     from pipeio.mcp import mcp_config_patch
 
     _scaffold_config_project(tmp_path, _CONFIG_WITH_ANCHORS)
-    new_group = {
-        "extra": {
-            "base_input": "ieeg",
+    new_group = {"extra": {"base_input": "ieeg",
             "members": {"out": {"suffix": "out", "extension": ".npy"}},
         }
     }
@@ -716,9 +693,7 @@ registry:
       fif: {suffix: ieeg, extension: .fif}
 """
     _scaffold_config_project(tmp_path, config_with_comments)
-    new_group = {
-        "extra": {
-            "base_input": "ieeg",
+    new_group = {"extra": {"base_input": "ieeg",
             "members": {"out": {"suffix": "out", "extension": ".npy"}},
         }
     }
@@ -761,9 +736,7 @@ registry:
         <<: *base_ieeg
 """
     _scaffold_config_project(tmp_path, config_with_unreferenced)
-    new_group = {
-        "extra": {
-            "base_input": "ieeg",
+    new_group = {"extra": {"base_input": "ieeg",
             "members": {"out": {"suffix": "out", "extension": ".npy"}},
         }
     }
@@ -811,11 +784,9 @@ def _scaffold_notebook_project(root: Path) -> Path:
     nb_dir.mkdir(parents=True, exist_ok=True)
 
     (nb_dir / "investigate_noise.py").write_text("# %% [markdown]\n# Hello\n")
-    nb_cfg = {
-        "publish": {"format": "html", "docs_dir": "", "prefix": ""},
+    nb_cfg = {"publish": {"format": "html", "docs_dir": "", "prefix": ""},
         "entries": [
-            {
-                "path": "notebooks/investigate_noise.py",
+            {"path": "notebooks/investigate_noise.py",
                 "kind": "investigate",
                 "description": "Check noise patterns",
                 "status": "active",
@@ -860,8 +831,7 @@ def test_mcp_nb_update_changes_status(tmp_path):
     # Verify persisted
     from pipeio.notebook.config import NotebookConfig
     nb_cfg_path = (
-        tmp_path / "code" / "pipelines" / "denoise"
-        / "notebooks" / "notebook.yml"
+        tmp_path / "code" / "pipelines" / "notebooks" / "notebook.yml"
     )
     nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
     assert nb_cfg.entries[0].status == "stale"
@@ -916,8 +886,7 @@ def test_mcp_nb_create_persists_metadata(tmp_path):
 
     from pipeio.notebook.config import NotebookConfig
     nb_cfg_path = (
-        tmp_path / "code" / "pipelines" / "denoise"
-        / "notebooks" / "notebook.yml"
+        tmp_path / "code" / "pipelines" / "notebooks" / "notebook.yml"
     )
     nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
     entry = nb_cfg.entries[0]
@@ -974,16 +943,11 @@ def _scaffold_mod_context_project(root: Path) -> Path:
     doc_dir.mkdir(parents=True)
     (doc_dir / "index.md").write_text("# Filter Module\nApplies filtering.\n", encoding="utf-8")
 
-    reg = {
-        "flows": {
-            "denoise": {
-                "name": "denoise",
+    reg = {"flows": {"denoise": {"name": "denoise",
                 "flow": "denoise",
                 "code_path": "code/pipelines/preproc/denoise",
                 "config_path": "code/pipelines/preproc/denoise/config.yml",
-                "mods": {
-                    "filter": {
-                        "name": "filter",
+                "mods": {"filter": {"name": "filter",
                         "rules": ["filter_raw", "filter_notch"],
                         "doc_path": None,
                     }

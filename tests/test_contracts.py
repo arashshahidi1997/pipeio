@@ -61,11 +61,7 @@ def _scaffold(tmp_path: Path, *, with_config: bool = True, valid_config: bool = 
 
     config_path = str(flow_dir / "config.yml") if with_config else None
 
-    reg = {
-        "flows": {
-            "preproc": {
-                "name": "preproc",
-                "pipe": "preproc",
+    reg = {"flows": {"preproc": {"name": "preproc",
                 "code_path": "code/pipelines/preproc",
                 "config_path": config_path,
             }
@@ -74,16 +70,12 @@ def _scaffold(tmp_path: Path, *, with_config: bool = True, valid_config: bool = 
     (pipeio_dir / "registry.yml").write_text(yaml.safe_dump(reg), encoding="utf-8")
 
     if with_config:
-        cfg: dict = {
-            "input_dir": "sourcedata",
+        cfg: dict = {"input_dir": "sourcedata",
             "output_dir": "results",
             "registry": {},
         }
         if valid_config:
-            cfg["registry"] = {
-                "deriv": {
-                    "members": {
-                        "cleaned": {"suffix": "cleaned", "extension": ".edf"}
+            cfg["registry"] = {"deriv": {"members": {"cleaned": {"suffix": "cleaned", "extension": ".edf"}
                     }
                 }
             }
@@ -140,11 +132,7 @@ def test_validate_projio_registry(tmp_path):
     flow_dir = tmp_path / "code" / "pipelines" / "preproc"
     flow_dir.mkdir(parents=True)
 
-    reg = {
-        "flows": {
-            "preproc": {
-                "name": "preproc",
-                "pipe": "preproc",
+    reg = {"flows": {"preproc": {"name": "preproc",
                 "code_path": "code/pipelines/preproc",
                 "config_path": str(flow_dir / "config.yml"),
             }

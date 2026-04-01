@@ -27,11 +27,9 @@ def _make_nb_config(
     """Write a notebooks/notebook.yml under flow_root."""
     nb_dir = flow_root / "notebooks"
     nb_dir.mkdir(parents=True, exist_ok=True)
-    cfg = {
-        "publish": {"docs_dir": docs_dir, "prefix": "nb-"},
+    cfg = {"publish": {"docs_dir": docs_dir, "prefix": "nb-"},
         "entries": [
-            {
-                "path": "notebooks/analysis.py",
+            {"path": "notebooks/analysis.py",
                 "pair_ipynb": pair_ipynb,
                 "pair_myst": pair_myst,
                 "publish_html": publish_html,
@@ -50,13 +48,11 @@ def _make_py(flow_root: Path) -> Path:
 
 def _make_ipynb(flow_root: Path, *, with_outputs: bool = False) -> Path:
     ipynb = flow_root / "notebooks" / "analysis.ipynb"
-    nb = {
-        "nbformat": 4,
+    nb = {"nbformat": 4,
         "nbformat_minor": 5,
         "metadata": {"kernelspec": {"name": "python3"}},
         "cells": [
-            {
-                "cell_type": "code",
+            {"cell_type": "code",
                 "source": "x = 1",
                 "metadata": {},
                 "outputs": [{"output_type": "execute_result", "data": {"text/plain": "1"}}] if with_outputs else [],
