@@ -11,11 +11,11 @@ from pipeio.config import FlowConfig, RegistryGroup, RegistryMember
 def _sample_config_yaml() -> str:
     return """\
 input_dir: "raw"
-input_registry: "raw/registry.yml"
+input_manifest: "raw/manifest.yml"
 input_dir_brainstate: "derivatives"
-input_registry_brainstate: "derivatives/brainstate/registry.yml"
+input_manifest_brainstate: "derivatives/brainstate/manifest.yml"
 output_dir: "derivatives/preprocess"
-output_registry: "derivatives/preprocess/registry.yml"
+output_manifest: "derivatives/preprocess/manifest.yml"
 
 pybids_inputs:
   ieeg:
@@ -73,6 +73,16 @@ def test_extra_inputs(tmp_path):
     dir_path, reg_path = extras["brainstate"]
     assert dir_path == "derivatives"
     assert "brainstate" in reg_path
+
+
+def test_manifest_fields(tmp_path):
+    """input_manifest/output_manifest fields are loaded from config."""
+    cfg_path = tmp_path / "config.yml"
+    cfg_path.write_text(_sample_config_yaml())
+    cfg = FlowConfig.from_yaml(cfg_path)
+
+    assert cfg.input_manifest == "raw/manifest.yml"
+    assert cfg.output_manifest == "derivatives/preprocess/manifest.yml"
 
 
 def test_groups(tmp_path):

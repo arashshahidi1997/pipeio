@@ -274,6 +274,216 @@ def mcp_flow_fork(
     }
 
 
+def mcp_flow_new(
+    root: Path,
+    flow: str,
+) -> dict[str, Any]:
+    """Scaffold a new pipeline flow with standard directory structure.
+
+    Creates the full flow scaffold under ``code/pipelines/<flow>/``:
+    Snakefile, config.yml, publish.yml, Makefile, scripts/, rules/,
+    docs/index.md, and notebook workspaces (explore + demo).
+
+    Idempotent: only writes missing files, so it can augment an
+    existing flow without overwriting.
+
+    Args:
+        root: Project root.
+        flow: Flow name (must be a valid slug: lowercase, underscores).
+    """
+    from pipeio.registry import slug_ok
+
+    if not slug_ok(flow):
+        return {"error": f"Invalid flow name: {flow!r}. Use lowercase letters, digits, and underscores."}
+
+    # Determine pipelines directory
+    if (root / "code" / "pipelines").exists():
+        pipelines_dir = root / "code" / "pipelines"
+    elif (root / "pipelines").exists():
+        pipelines_dir = root / "pipelines"
+    else:
+        pipelines_dir = root / "code" / "pipelines"
+
+    flow_dir = pipelines_dir / flow
+    is_new = not flow_dir.exists()
+
+    if flow_dir.exists() and (flow_dir / "Snakefile").exists():
+        is_new = False
+
+    # Create directory structure (idempotent)
+    flow_dir.mkdir(parents=True, exist_ok=True)
+    created: list[str] = []
+
+    for d in [
+        "scripts",
+        "rules",
+        "docs",
+        "notebooks/explore/.src",
+        "notebooks/explore/.myst",
+        "notebooks/demo/.src",
+        "notebooks/demo/.myst",
+    ]:
+        path = flow_dir / d
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            created.append(d)
+
+    # config.yml
+    cfg_path = flow_dir / "config.yml"
+    if not cfg_path.exists():
+        cfg_path.write_text(
+            f"# config for {flow}\n"
+            f"input_dir: \"\"\n"
+            f"output_dir: \"derivatives/{flow}\"\n"
+            f"input_manifest: \"\"\n"
+            f"output_manifest: \"derivatives/{flow}/manifest.yml\"\n"
+            f"registry: {{}}\n",
+            encoding="utf-8",
+        )
+        created.append("config.yml")
+
+    # Snakefile
+    snakefile = flow_dir / "Snakefile"
+    if not snakefile.exists():
+        snakefile.write_text(
+            f"# Snakefile for {flow}\n"
+            f"from pathlib import Path\n"
+            f"\n"
+            f"configfile: \"config.yml\"\n"
+            f"\n"
+            f"\n"
+            f"rule all:\n"
+            f"    input: []\n",
+            encoding="utf-8",
+        )
+        created.append("Snakefile")
+
+    # publish.yml
+    pub_path = flow_dir / "publish.yml"
+    if not pub_path.exists():
+        pub_path.write_text(
+            "dag: true\n"
+            "report: false\n"
+            "scripts: true\n",
+            encoding="utf-8",
+        )
+        created.append("publish.yml")
+
+    # Makefile
+    makefile = flow_dir / "Makefile"
+    if not makefile.exists():
+        makefile.write_text(
+            f"# Flow: {flow}\n"
+            f"SHELL := /bin/bash\n"
+            f"\n"
+            f"# Project root (relative to this Makefile)\n"
+            f"PROJECT_ROOT ?= $(shell git -C $(dir $(abspath $(lastword $(MAKEFILE_LIST)))) rev-parse --show-toplevel)\n"
+            f"\n"
+            f".PHONY: help run dry-run nb-status nb-sync nb-lab nb-publish\n"
+            f"\n"
+            f"help:\n"
+            f"\t@echo \"Targets: run dry-run nb-status nb-sync nb-lab nb-publish\"\n"
+            f"\n"
+            f"run:\n"
+            f"\tsnakemake --snakefile $(CURDIR)/Snakefile --directory $(PROJECT_ROOT) -j1\n"
+            f"\n"
+            f"dry-run:\n"
+            f"\tsnakemake --snakefile $(CURDIR)/Snakefile --directory $(PROJECT_ROOT) -j1 -n\n"
+            f"\n"
+            f"nb-status:\n"
+            f"\tpipeio nb status\n"
+            f"\n"
+            f"nb-sync:\n"
+            f"\tpipeio nb sync --direction py2nb\n"
+            f"\n"
+            f"nb-lab:\n"
+            f"\tpipeio nb lab\n"
+            f"\n"
+            f"nb-publish:\n"
+            f"\tpipeio nb sync --direction py2nb --force\n"
+            f"\tpipeio nb publish\n",
+            encoding="utf-8",
+        )
+        created.append("Makefile")
+
+    # notebook.yml + initial explore notebook
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if not nb_cfg_path.exists():
+        nb_name = f"explore_{flow}"
+        nb_path = flow_dir / "notebooks" / "explore" / ".src" / f"{nb_name}.py"
+        nb_path.write_text(
+            f"# ---\n"
+            f"# jupyter:\n"
+            f"#   jupytext:\n"
+            f"#     text_representation:\n"
+            f"#       format_name: percent\n"
+            f"# ---\n"
+            f"\n"
+            f"# %% [markdown]\n"
+            f"# # Explore {flow.replace('_', ' ').title()}\n"
+            f"#\n"
+            f"# Initial exploration notebook for {flow}.\n"
+            f"\n"
+            f"# %% [markdown]\n"
+            f"# ## Setup\n"
+            f"\n"
+            f"# %%\n"
+            f"from pathlib import Path\n"
+            f"\n"
+            f"# %% [markdown]\n"
+            f"# ## Analysis\n"
+            f"\n"
+            f"# %%\n",
+            encoding="utf-8",
+        )
+
+        nb_cfg = {
+            "kernel": "",
+            "publish": {"docs_dir": "", "prefix": "nb-"},
+            "entries": [{
+                "path": f"notebooks/explore/.src/{nb_name}.py",
+                "kind": "explore",
+                "description": f"Initial exploration for {flow}",
+                "status": "draft",
+                "pair_ipynb": True,
+                "pair_myst": True,
+            }],
+        }
+        nb_cfg_path.write_text(
+            yaml.safe_dump(nb_cfg, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        created.append("notebook.yml")
+        created.append(f"notebooks/explore/.src/{nb_name}.py")
+
+    # docs/index.md
+    docs_index = flow_dir / "docs" / "index.md"
+    if not docs_index.exists():
+        docs_index.write_text(
+            f"# {flow}\n"
+            f"\n"
+            f"Flow: `{flow}`\n"
+            f"\n"
+            f"## Mods\n"
+            f"\n"
+            f"(none yet)\n",
+            encoding="utf-8",
+        )
+        created.append("docs/index.md")
+
+    try:
+        code_path = str(flow_dir.relative_to(root))
+    except ValueError:
+        code_path = str(flow_dir)
+
+    return {
+        "flow": flow,
+        "code_path": code_path,
+        "is_new": is_new,
+        "created": created,
+    }
+
+
 def mcp_nb_status(
     root: Path,
     flow: str | None = None,
@@ -356,7 +566,7 @@ def mcp_nb_status(
 
         if notebooks:
             flow_statuses.append({
-                "flow": f"{entry.name}/{entry.name}",
+                "flow": entry.name,
                 "notebooks": notebooks,
             })
 
@@ -485,16 +695,14 @@ def _resolve_mod_doc_path(
     """Resolve documentation path for a mod.
 
     Checks these locations in order:
-    1. ``docs/pipelines/{flow}/mods/{mod}.md``
-    2. ``docs/pipelines/{flow}/mod-{mod}/index.md`` (legacy)
-    3. ``docs/explanation/pipelines/{flow}/mod-{mod}/index.md`` (legacy)
+    1. ``docs/pipelines/{flow}/mods/{mod}/theory.md`` (faceted, preferred)
+    2. ``docs/pipelines/{flow}/mods/{mod}.md`` (single-file)
 
     Returns (relative_path_or_None, exists_bool).
     """
     candidates = [
+        root / "docs" / "pipelines" / flow / "mods" / mod / "theory.md",
         root / "docs" / "pipelines" / flow / "mods" / f"{mod}.md",
-        root / "docs" / "pipelines" / flow / f"mod-{mod}" / "index.md",
-        root / "docs" / "explanation" / "pipelines" / flow / f"mod-{mod}" / "index.md",
     ]
     for path in candidates:
         if path.exists():
@@ -507,7 +715,6 @@ def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
     """Resolve modkeys into metadata.
 
     Modkey format: ``{flow}_mod-{mod}``
-    Legacy format ``pipe-{pipe}_flow-{flow}_mod-{mod}`` is also accepted.
     """
     import re
 
@@ -518,18 +725,12 @@ def mcp_mod_resolve(root: Path, modkeys: list[str]) -> dict[str, Any]:
         return _NO_REGISTRY
 
     registry = PipelineRegistry.from_yaml(registry_path)
-    # New format: flow_mod-mod  or  legacy: pipe-X_flow-Y_mod-Z
-    new_pattern = re.compile(r"^(?:@)?(?P<flow>[^_]+)_mod-(?P<mod>.+)$")
-    legacy_pattern = re.compile(
-        r"^(?:@)?pipe-(?P<pipe>[^_]+)_flow-(?P<flow>[^_]+)_mod-(?P<mod>.+)$"
-    )
+    pattern = re.compile(r"^(?:@)?(?P<flow>[^_]+)_mod-(?P<mod>.+)$")
 
     results: list[dict[str, Any]] = []
     for raw_key in modkeys:
         key = raw_key.strip()
-        m = new_pattern.match(key)
-        if not m:
-            m = legacy_pattern.match(key)
+        m = pattern.match(key)
         if not m:
             results.append({"input": raw_key, "error": f"Invalid modkey format: {key!r}"})
             continue
@@ -649,13 +850,40 @@ def mcp_mod_context(
                 except Exception:
                     scripts[script_path] = f"<read error>"
 
-    # --- Doc: read mod documentation ---
+    # --- Doc: read mod documentation (faceted or legacy) ---
     doc_content: str | None = None
+    doc_facets: dict[str, str] = {}
     doc_path_str, doc_exists = _resolve_mod_doc_path(root, entry.name, mod)
-    if mod_entry.doc_path and (root / mod_entry.doc_path).exists():
-        doc_path_str = mod_entry.doc_path
-        doc_exists = True
-    if doc_exists and doc_path_str:
+
+    # Check flow-local faceted docs: docs/{mod}/theory.md, spec.md, delta.md
+    flow_local_doc_dir = flow_dir / "docs" / mod
+    if flow_local_doc_dir.is_dir():
+        for facet_name in ("theory", "spec", "delta"):
+            facet_path = flow_local_doc_dir / f"{facet_name}.md"
+            if facet_path.exists():
+                try:
+                    doc_facets[facet_name] = facet_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+        if doc_facets:
+            doc_exists = True
+            doc_path_str = str(flow_local_doc_dir.relative_to(root))
+            # Primary doc content is theory
+            doc_content = doc_facets.get("theory")
+
+    # Fallback: registry doc_path
+    if not doc_facets and mod_entry.doc_path:
+        reg_doc = root / mod_entry.doc_path
+        if reg_doc.is_dir():
+            idx = reg_doc / "index.md"
+            if idx.exists():
+                doc_path_str = str(idx.relative_to(root))
+                doc_exists = True
+        elif reg_doc.is_file():
+            doc_path_str = mod_entry.doc_path
+            doc_exists = True
+
+    if doc_content is None and doc_exists and doc_path_str:
         try:
             doc_content = (root / doc_path_str).read_text(encoding="utf-8")
         except Exception:
@@ -718,6 +946,7 @@ def mcp_mod_context(
         "scripts": scripts,
         "doc_path": doc_path_str,
         "doc": doc_content,
+        "doc_facets": doc_facets or None,
         "config_params": config_params,
         "bids_signatures": bids_signatures,
     }
@@ -918,6 +1147,145 @@ def mcp_contracts_validate(root: Path) -> dict[str, Any]:
     }
 
 
+def _nb_template(
+    *,
+    name: str,
+    flow: str,
+    kind: str,
+    description: str,
+    config_path: str = "",
+    groups: list[str] | None = None,
+    output_dir: str = "",
+    compute_lib: str = "",
+) -> list[str]:
+    """Generate kind-aware notebook template lines.
+
+    Returns a list of strings (lines) for a percent-format .py notebook.
+    Template varies by kind:
+    - investigate/explore: config loading, registry groups, data iteration, analysis
+    - demo/validate: load final outputs, visualization, summary
+    """
+    L: list[str] = []
+
+    # --- Header ---
+    L.extend([
+        "# ---",
+        "# jupyter:",
+        "#   jupytext:",
+        "#     text_representation:",
+        "#       format_name: percent",
+        "# ---",
+        "",
+        "# %% [markdown]",
+        f"# # {name.replace('_', ' ').title()}",
+        "#",
+        f"# {description}",
+        "",
+    ])
+
+    # --- Setup cell ---
+    L.extend([
+        "# %% [markdown]",
+        "# ## Setup",
+        "",
+        "# %%",
+        "from pathlib import Path",
+        "",
+        "import yaml",
+        "",
+    ])
+
+    if compute_lib:
+        L.append(f"import {compute_lib}")
+        L.append("")
+
+    # --- Config loading ---
+    if config_path:
+        L.extend([
+            f'config_path = Path("{config_path}")',
+            "with open(config_path) as f:",
+            "    config = yaml.safe_load(f)",
+            "",
+            f'output_dir = Path(config.get("output_dir", ""))',
+            "",
+        ])
+    elif output_dir:
+        L.append(f'output_dir = Path("{output_dir}")')
+        L.append("")
+
+    if groups:
+        L.append(f"# Available registry groups: {', '.join(groups)}")
+        L.append("")
+
+    # --- Kind-specific sections ---
+    if kind in ("investigate", "explore"):
+        # Exploration: iterate subjects, load data, analyze
+        L.extend([
+            "# %% [markdown]",
+            f"# ## Data Loading",
+            "#",
+            f"# Load pipeline outputs for exploration.",
+            "",
+            "# %%",
+            "# Example: iterate over subjects",
+            "# subjects = sorted(output_dir.glob('sub-*'))",
+            "# for sub_dir in subjects:",
+            "#     print(sub_dir.name)",
+            "",
+            "# %% [markdown]",
+            "# ## Analysis",
+            "",
+            "# %%",
+            "",
+            "# %% [markdown]",
+            "# ## Findings",
+            "#",
+            "# Summarize results here. These feed into theory.md.",
+            "",
+            "# %%",
+            "",
+        ])
+    elif kind in ("demo", "validate"):
+        # Demo: load final outputs, visualize, summarize
+        L.extend([
+            "# %% [markdown]",
+            f"# ## Load Outputs",
+            "#",
+            f"# Load final pipeline outputs for demonstration.",
+            "",
+            "# %%",
+        ])
+        if groups:
+            L.append(f"# Registry groups available: {', '.join(groups)}")
+            L.append("# Load from output_dir / group / subject / ...")
+        L.extend([
+            "",
+            "# %% [markdown]",
+            "# ## Visualization",
+            "",
+            "# %%",
+            "",
+            "# %% [markdown]",
+            "# ## Summary",
+            "#",
+            "# Key results demonstrated above.",
+            "",
+            "# %%",
+            "",
+        ])
+    else:
+        # Generic fallback
+        L.extend([
+            "# %% [markdown]",
+            "# ## Analysis",
+            "",
+            "# %%",
+            "",
+        ])
+
+    return L
+
+
 def mcp_nb_create(
     root: Path,
     flow: str,
@@ -957,15 +1325,30 @@ def mcp_nb_create(
         flow_dir = root / flow_dir
 
     nb_dir = flow_dir / "notebooks"
-    src_dir = nb_dir / ".src"
+
+    # Route to workspace directory based on kind
+    _EXPLORE_KINDS = {"investigate", "explore"}
+    _DEMO_KINDS = {"demo", "validate"}
+    if kind in _EXPLORE_KINDS:
+        workspace = "explore"
+    elif kind in _DEMO_KINDS:
+        workspace = "demo"
+    else:
+        workspace = ""
+
+    if workspace:
+        src_dir = nb_dir / workspace / ".src"
+    else:
+        src_dir = nb_dir / ".src"
     src_dir.mkdir(parents=True, exist_ok=True)
 
     nb_path = src_dir / f"{name}.py"
     if nb_path.exists():
         return {"error": f"Notebook already exists: {nb_path.relative_to(root)}"}
 
-    # Load flow config for registry groups
+    # Load flow config for registry groups and output dir
     groups: list[str] = []
+    output_dir = ""
     config_path_str = entry.config_path
     if config_path_str:
         cfg_path = Path(config_path_str)
@@ -975,53 +1358,44 @@ def mcp_nb_create(
             try:
                 cfg = FlowConfig.from_yaml(cfg_path)
                 groups = cfg.groups()
+                output_dir = cfg.output_dir
             except Exception:
                 pass
 
-    # Generate percent-format .py
-    lines: list[str] = []
-    lines.append("# ---")
-    lines.append(f"# jupyter:")
-    lines.append(f"#   jupytext:")
-    lines.append(f"#     text_representation:")
-    lines.append(f"#       format_name: percent")
-    lines.append("# ---")
-    lines.append("")
-    lines.append(f'# %% [markdown]')
-    desc_text = description or f"{kind.title()} notebook for {flow}"
-    lines.append(f"# # {name.replace('_', ' ').title()}")
-    lines.append(f"#")
-    lines.append(f"# {desc_text}")
-    lines.append("")
-    lines.append("# %% [markdown]")
-    lines.append("# ## Setup")
-    lines.append("")
-    lines.append("# %%")
-    lines.append("from pathlib import Path")
-    lines.append("")
+    # Discover project compute library via codio (if available)
+    compute_lib: str = ""
+    try:
+        from codio import load_config as codio_load_config  # type: ignore[import]
+        from codio import Registry as CodioRegistry  # type: ignore[import]
+        codio_cfg = codio_load_config(root)
+        codio_reg = CodioRegistry.load(codio_cfg)
+        internals = [lib for lib in codio_reg.list() if lib.kind == "internal"]
+        if internals:
+            compute_lib = internals[0].runtime_import or internals[0].name
+    except Exception:
+        pass
+
+    # Compute relative config path from notebook .src/ dir
+    rel_cfg_str = ""
     if config_path_str:
-        rel_cfg = Path(config_path_str)
-        if not rel_cfg.is_absolute():
-            # Compute relative path from .src/ dir to config
-            try:
-                rel = Path(config_path_str).resolve() if Path(
-                    config_path_str
-                ).is_absolute() else (root / config_path_str).resolve()
-                rel_cfg = rel.relative_to(src_dir.resolve())
-            except ValueError:
-                rel_cfg = Path(config_path_str)
-        lines.append(f'config_path = Path("{rel_cfg}")')
-    lines.append("")
+        try:
+            abs_cfg = (root / config_path_str).resolve()
+            rel_cfg_str = str(abs_cfg.relative_to(src_dir.resolve()))
+        except ValueError:
+            rel_cfg_str = config_path_str
 
-    if groups:
-        lines.append(f"# Registry groups: {', '.join(groups)}")
-        lines.append("")
-
-    lines.append("# %% [markdown]")
-    lines.append("# ## Analysis")
-    lines.append("")
-    lines.append("# %%")
-    lines.append("")
+    # Generate percent-format .py with kind-aware template
+    desc_text = description or f"{kind.title()} notebook for {flow}"
+    lines: list[str] = _nb_template(
+        name=name,
+        flow=flow,
+        kind=kind,
+        description=desc_text,
+        config_path=rel_cfg_str,
+        groups=groups,
+        output_dir=output_dir,
+        compute_lib=compute_lib,
+    )
 
     nb_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -1035,7 +1409,10 @@ def mcp_nb_create(
     else:
         nb_cfg = NotebookConfig()
 
-    rel_nb = f"notebooks/.src/{name}.py"
+    if workspace:
+        rel_nb = f"notebooks/{workspace}/.src/{name}.py"
+    else:
+        rel_nb = f"notebooks/.src/{name}.py"
     existing_paths = {e.path for e in nb_cfg.entries}
     if rel_nb not in existing_paths:
         nb_cfg.entries.append(NotebookEntry(
@@ -2757,8 +3134,8 @@ def mcp_config_init(
     if not output_dir:
         output_dir = f"derivatives/{flow}"
     config["output_dir"] = output_dir
-    config["output_registry"] = (
-        f"{output_dir}/{entry.name}_registry.yml"
+    config["output_manifest"] = (
+        f"{output_dir}/manifest.yml"
     )
 
     # Registry
@@ -3019,50 +3396,750 @@ def mcp_mod_create(
 
     script_path.write_text("\n".join(lines), encoding="utf-8")
 
-    # Create doc stub
-    docs_dir = flow_dir / "docs"
-    docs_dir.mkdir(parents=True, exist_ok=True)
+    # Create faceted doc stubs: docs/{mod}/theory.md + spec.md
+    mod_docs_dir = flow_dir / "docs" / mod
+    mod_docs_dir.mkdir(parents=True, exist_ok=True)
 
-    doc_path = docs_dir / f"mod-{mod}.md"
-    created_doc = False
-    if not doc_path.exists():
-        doc_lines = [
+    created_docs: list[str] = []
+
+    theory_path = mod_docs_dir / "theory.md"
+    if not theory_path.exists():
+        theory_lines = [
             "---",
             f"mod: {mod}",
-            f"flow: {flow}",
             f"flow: {entry.name}",
+            "facet: theory",
             "---",
             "",
             f"# {mod.replace('_', ' ').title()}",
             "",
             desc_text,
             "",
-            "## Rules",
+            "## Rationale",
+            "",
+            "<!-- Scientific rationale and method justification. -->",
+            "<!-- Use pandoc citations: [@citekey] -->",
+            "",
+            "## References",
+            "",
+        ]
+        theory_path.write_text("\n".join(theory_lines), encoding="utf-8")
+        created_docs.append("theory.md")
+
+    spec_path = mod_docs_dir / "spec.md"
+    if not spec_path.exists():
+        spec_lines = [
+            "---",
+            f"mod: {mod}",
+            f"flow: {entry.name}",
+            "facet: spec",
+            "---",
+            "",
+            f"# {mod.replace('_', ' ').title()} — Specification",
+            "",
+            "## I/O Contract",
+            "",
+            "<!-- Input/output paths, BIDS entities, file formats. -->",
             "",
             "## Parameters",
             "",
-            "## Assumptions",
+            "<!-- Config parameters and their meaning. -->",
+            "",
+            "## Components",
+            "",
+            "<!-- Rules, scripts, and their relationships. -->",
             "",
         ]
-        doc_path.write_text("\n".join(doc_lines), encoding="utf-8")
-        created_doc = True
+        spec_path.write_text("\n".join(spec_lines), encoding="utf-8")
+        created_docs.append("spec.md")
 
     try:
         script_rel = str(script_path.relative_to(root))
-        doc_rel = str(doc_path.relative_to(root))
+        doc_rel = str(mod_docs_dir.relative_to(root))
     except ValueError:
         script_rel = str(script_path)
-        doc_rel = str(doc_path)
+        doc_rel = str(mod_docs_dir)
 
     return {
         "created_script": script_rel,
-        "created_doc": doc_rel if created_doc else None,
-        "flow": flow,
+        "created_docs": created_docs,
+        "doc_dir": doc_rel,
         "flow": entry.name,
         "mod": mod,
         "seeded_from": from_notebook if nb_imports else None,
         "io_wiring": has_io,
         "pipeline_context": use_pipeline_context,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCP tools: mod audit
+# ---------------------------------------------------------------------------
+
+
+def mcp_mod_audit(
+    root: Path,
+    flow: str | None = None,
+    mod: str = "",
+) -> dict[str, Any]:
+    """Audit a mod's health: contract drift, doc/script existence, naming.
+
+    Returns structured findings without modifying anything.  Checks:
+
+    1. **Script existence** — every ``script:`` reference resolves to a file.
+    2. **Contract drift** — Snakefile I/O entries have matching config registry
+       groups/members.
+    3. **Doc coverage** — ``docs/{mod}/theory.md`` and ``spec.md`` exist and
+       are non-empty.
+    4. **Naming convention** — all rules follow the ``{mod}_*`` prefix.
+    5. **Registry consistency** — registered mod rules match rules discovered
+       in the Snakefile.
+
+    Args:
+        root: Project root.
+        flow: Flow name (required unless single-flow project).
+        mod: Mod name (audits all mods in the flow if empty).
+    """
+    import re
+
+    import yaml
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    # Parse all rules from Snakefile + *.smk
+    all_rules: list[dict[str, Any]] = []
+    candidates: list[Path] = list(flow_dir.glob("rules/*.smk"))
+    snakefile = flow_dir / "Snakefile"
+    if snakefile.exists():
+        candidates.insert(0, snakefile)
+    for sf in candidates:
+        try:
+            text = sf.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for rule_info in _parse_snakefile_rules(text):
+            rule_info["source_file"] = sf.name
+            all_rules.append(rule_info)
+
+    # Build rule → mod mapping from registry
+    reg_rule_to_mod: dict[str, str] = {}
+    for mname, me in entry.mods.items():
+        for rname in me.rules:
+            reg_rule_to_mod[rname] = mname
+
+    # Load config for registry group cross-checking
+    config_groups: set[str] = set()
+    if entry.config_path:
+        cfg_path = Path(entry.config_path)
+        if not cfg_path.is_absolute():
+            cfg_path = root / cfg_path
+        if cfg_path.exists():
+            try:
+                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                config_groups = set(raw.get("registry", {}).keys())
+            except Exception:
+                pass
+
+    # Determine which mods to audit
+    target_mods: set[str]
+    if mod:
+        if mod not in entry.mods:
+            return {"error": f"Mod {mod!r} not found in {entry.name}"}
+        target_mods = {mod}
+    else:
+        target_mods = set(entry.mods.keys())
+
+    mod_reports: list[dict[str, Any]] = []
+
+    for mod_name in sorted(target_mods):
+        mod_entry = entry.mods[mod_name]
+        findings: list[dict[str, str]] = []
+
+        # --- 1. Registry consistency: registered rules vs discovered ---
+        registered_rules = set(mod_entry.rules)
+        # Rules that match the mod prefix in the Snakefile
+        discovered_rules = {
+            r["name"] for r in all_rules
+            if r["name"].startswith(f"{mod_name}_") or r["name"] == mod_name
+        }
+        missing_in_snakefile = registered_rules - {r["name"] for r in all_rules}
+        unregistered = discovered_rules - registered_rules
+
+        for rname in sorted(missing_in_snakefile):
+            findings.append({
+                "severity": "error",
+                "check": "registry_consistency",
+                "message": f"Rule {rname!r} registered but not found in Snakefile",
+            })
+        for rname in sorted(unregistered):
+            findings.append({
+                "severity": "warning",
+                "check": "registry_consistency",
+                "message": f"Rule {rname!r} matches mod prefix but not registered",
+            })
+
+        # --- 2. Naming convention ---
+        for rname in registered_rules:
+            if not rname.startswith(f"{mod_name}_") and rname != mod_name:
+                findings.append({
+                    "severity": "warning",
+                    "check": "naming",
+                    "message": f"Rule {rname!r} doesn't follow {mod_name}_* prefix",
+                })
+
+        # --- 3. Script existence ---
+        mod_rules = [r for r in all_rules if r["name"] in registered_rules]
+        for rule in mod_rules:
+            script = rule.get("script")
+            if script:
+                script_path = flow_dir / script
+                if not script_path.exists():
+                    findings.append({
+                        "severity": "error",
+                        "check": "script_exists",
+                        "message": f"Script {script!r} not found (rule {rule['name']})",
+                    })
+
+        # --- 4. Contract drift: check output groups reference config registry ---
+        for rule in mod_rules:
+            for out_name, out_expr in (rule.get("output") or {}).items():
+                out_str = str(out_expr)
+                # Look for out_paths("group", ...) or bids(root="group", ...)
+                group_match = re.search(
+                    r'(?:out_paths|bids)\s*\(\s*["\'](\w+)["\']', out_str
+                )
+                if group_match:
+                    group = group_match.group(1)
+                    if config_groups and group not in config_groups:
+                        findings.append({
+                            "severity": "warning",
+                            "check": "contract_drift",
+                            "message": (
+                                f"Rule {rule['name']} output references group "
+                                f"{group!r} not in config registry"
+                            ),
+                        })
+
+        # --- 5. Doc coverage ---
+        docs_dir = flow_dir / "docs" / mod_name
+        for facet in ("theory.md", "spec.md"):
+            facet_path = docs_dir / facet
+            if not facet_path.exists():
+                findings.append({
+                    "severity": "info",
+                    "check": "doc_coverage",
+                    "message": f"Missing docs/{mod_name}/{facet}",
+                })
+            elif facet_path.stat().st_size < 50:
+                findings.append({
+                    "severity": "info",
+                    "check": "doc_coverage",
+                    "message": f"docs/{mod_name}/{facet} appears to be a stub (<50 bytes)",
+                })
+
+        errors = [f for f in findings if f["severity"] == "error"]
+        warnings = [f for f in findings if f["severity"] == "warning"]
+        infos = [f for f in findings if f["severity"] == "info"]
+
+        mod_reports.append({
+            "mod": mod_name,
+            "rules_registered": len(registered_rules),
+            "rules_discovered": len(discovered_rules),
+            "findings": findings,
+            "error_count": len(errors),
+            "warning_count": len(warnings),
+            "info_count": len(infos),
+        })
+
+    total_errors = sum(r["error_count"] for r in mod_reports)
+    total_warnings = sum(r["warning_count"] for r in mod_reports)
+
+    return {
+        "flow": entry.name,
+        "mods_audited": len(mod_reports),
+        "total_errors": total_errors,
+        "total_warnings": total_warnings,
+        "healthy": total_errors == 0,
+        "mods": mod_reports,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCP tools: mod doc refresh + script create
+# ---------------------------------------------------------------------------
+
+
+def mcp_mod_doc_refresh(
+    root: Path,
+    flow: str,
+    mod: str,
+    facet: str = "spec",
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Regenerate a mod doc facet from current mod_context.
+
+    Generates an updated ``spec.md`` (default) or ``theory.md`` skeleton
+    from the mod's current rules, scripts, config params, and bids
+    signatures.  Returns the content as a preview; set ``apply=True``
+    to write to disk.
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        mod: Mod name.
+        facet: Which facet to refresh (``spec`` or ``theory``).
+        apply: Write the refreshed doc to disk (default False).
+    """
+    if facet not in ("spec", "theory"):
+        return {"error": f"facet must be 'spec' or 'theory', got {facet!r}"}
+
+    # Get current mod context
+    ctx = mcp_mod_context(root, flow=flow, mod=mod)
+    if "error" in ctx:
+        return ctx
+
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+    registry = PipelineRegistry.from_yaml(registry_path)
+    entry = registry.get(flow)
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    doc_dir = flow_dir / "docs" / mod
+    doc_path = doc_dir / f"{facet}.md"
+
+    if facet == "spec":
+        lines = [
+            "---",
+            f"mod: {mod}",
+            f"flow: {entry.name}",
+            "facet: spec",
+            "---",
+            "",
+            f"# {mod.replace('_', ' ').title()} — Specification",
+            "",
+            "## Rules",
+            "",
+        ]
+        for rule in ctx.get("rules", []):
+            script = rule.get("script", "")
+            script_info = f" (`{script}`)" if script else ""
+            lines.append(f"- **{rule['name']}**{script_info}")
+            for io_type in ("input", "output"):
+                io_dict = rule.get(io_type) or {}
+                if io_dict:
+                    lines.append(f"  - {io_type}: {', '.join(io_dict.keys())}")
+        lines.append("")
+
+        lines.append("## I/O Contract")
+        lines.append("")
+        sigs = ctx.get("bids_signatures") or {}
+        if sigs:
+            lines.append("| Group | Member | bids() signature |")
+            lines.append("|-------|--------|-----------------|")
+            for group, members in sigs.items():
+                for member, sig in members.items():
+                    lines.append(f"| {group} | {member} | `{sig}` |")
+            lines.append("")
+        else:
+            lines.append("No bids signatures found.")
+            lines.append("")
+
+        lines.append("## Parameters")
+        lines.append("")
+        params = ctx.get("config_params") or {}
+        if params:
+            for section, values in params.items():
+                lines.append(f"### {section}")
+                lines.append("")
+                if isinstance(values, dict):
+                    for k, v in values.items():
+                        lines.append(f"- `{k}`: `{v}`")
+                else:
+                    lines.append(f"- `{values}`")
+                lines.append("")
+        else:
+            lines.append("No config parameters referenced.")
+            lines.append("")
+
+        lines.append("## Scripts")
+        lines.append("")
+        for script_path, _content in (ctx.get("scripts") or {}).items():
+            lines.append(f"- `{script_path}`")
+        lines.append("")
+
+    else:  # theory
+        lines = [
+            "---",
+            f"mod: {mod}",
+            f"flow: {entry.name}",
+            "facet: theory",
+            "---",
+            "",
+            f"# {mod.replace('_', ' ').title()}",
+            "",
+            "## Rationale",
+            "",
+            "<!-- Scientific rationale and method justification. -->",
+            "<!-- Use pandoc citations: [@citekey] -->",
+            "",
+            "## Method",
+            "",
+            f"This mod contains {len(ctx.get('rules', []))} rule(s): "
+            f"{', '.join(r['name'] for r in ctx.get('rules', []))}.",
+            "",
+            "## References",
+            "",
+        ]
+
+    content = "\n".join(lines)
+
+    if apply:
+        doc_dir.mkdir(parents=True, exist_ok=True)
+        doc_path.write_text(content, encoding="utf-8")
+
+    try:
+        rel = str(doc_path.relative_to(root))
+    except ValueError:
+        rel = str(doc_path)
+
+    return {
+        "facet": facet,
+        "path": rel,
+        "content": content,
+        "applied": apply,
+        "exists": doc_path.exists(),
+    }
+
+
+def mcp_script_create(
+    root: Path,
+    flow: str,
+    mod: str,
+    script_name: str,
+    description: str = "",
+    inputs: dict[str, str] | None = None,
+    outputs: dict[str, str] | None = None,
+    params_spec: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Create an additional script for an existing mod.
+
+    Use this when a mod already exists (via ``mod_create``) and you need
+    a second or third script for additional rules.  Generates the same
+    Snakemake-compatible script template as ``mod_create``.
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        mod: Mod name (for context — used in docstring, not in path).
+        script_name: Script filename (without .py extension).
+        description: One-line purpose.
+        inputs: ``{var_name: description}`` for snakemake.input unpacking.
+        outputs: ``{var_name: description}`` for snakemake.output unpacking.
+        params_spec: ``{var_name: description}`` for snakemake.params unpacking.
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    scripts_dir = flow_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clean up script name
+    if script_name.endswith(".py"):
+        script_name = script_name[:-3]
+
+    script_path = scripts_dir / f"{script_name}.py"
+    if script_path.exists():
+        return {"error": f"Script already exists: {script_path.relative_to(root)}"}
+
+    # Discover compute library via codio
+    compute_lib = ""
+    try:
+        from codio import load_config as codio_load_config  # type: ignore[import]
+        from codio import Registry as CodioRegistry  # type: ignore[import]
+        codio_cfg = codio_load_config(root)
+        codio_reg = CodioRegistry.load(codio_cfg)
+        internals = [lib for lib in codio_reg.list() if lib.kind == "internal"]
+        if internals:
+            compute_lib = internals[0].runtime_import or internals[0].name
+    except Exception:
+        pass
+
+    has_io = bool(inputs or outputs or params_spec)
+    desc_text = description or f"Script for mod {mod}: {script_name}"
+
+    lines: list[str] = [
+        f'"""{desc_text}"""',
+        "",
+        "from pathlib import Path",
+        "",
+    ]
+    if compute_lib:
+        lines.append(f"import {compute_lib}")
+        lines.append("")
+
+    lines.extend([
+        "",
+        "def main(snakemake):",
+        '    """Entry point called by Snakemake rule."""',
+    ])
+
+    if has_io:
+        if inputs:
+            lines.append("")
+            lines.append("    # --- Inputs ---")
+            for var, desc in inputs.items():
+                lines.append(f"    {var} = Path(snakemake.input.{var})  # {desc}")
+
+        if outputs:
+            lines.append("")
+            lines.append("    # --- Outputs ---")
+            for var, desc in outputs.items():
+                lines.append(f"    {var} = Path(snakemake.output.{var})  # {desc}")
+
+        if params_spec:
+            lines.append("")
+            lines.append("    # --- Parameters ---")
+            for var, desc in params_spec.items():
+                lines.append(f"    {var} = snakemake.params.{var}  # {desc}")
+
+        lines.append("")
+        lines.append("    # --- Processing ---")
+        if outputs:
+            first_out = next(iter(outputs))
+            lines.append(f"    {first_out}.parent.mkdir(parents=True, exist_ok=True)")
+        lines.append("    pass")
+    else:
+        lines.append("    pass")
+
+    lines.extend([
+        "",
+        "",
+        'if __name__ == "__main__":',
+        "    main(snakemake)  # noqa: F821",
+        "",
+    ])
+
+    script_path.write_text("\n".join(lines), encoding="utf-8")
+
+    try:
+        rel = str(script_path.relative_to(root))
+    except ValueError:
+        rel = str(script_path)
+
+    return {
+        "created": rel,
+        "flow": entry.name,
+        "mod": mod,
+        "script_name": f"{script_name}.py",
+        "compute_library": compute_lib or None,
+        "io_wiring": has_io,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCP tools: notebook promotion
+# ---------------------------------------------------------------------------
+
+
+def mcp_nb_promote(
+    root: Path,
+    flow: str,
+    name: str,
+    mod: str,
+    rule_name: str = "",
+    description: str = "",
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Promote a notebook to a pipeline mod: analyze → script → rule → config → docs.
+
+    Orchestrates the full notebook-to-mod extraction pipeline:
+
+    1. Analyze the notebook (imports, sections, processing logic)
+    2. Generate a script skeleton from the notebook's core cells
+    3. Generate a Snakemake rule stub
+    4. Scaffold mod doc stubs (theory.md + spec.md)
+    5. Return everything as a preview bundle
+
+    By default, only the script is written. Rule stubs and config patches
+    are returned for review. Set ``apply=True`` to also create docs.
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        name: Notebook basename (without extension).
+        mod: Target mod name.
+        rule_name: Rule name (default: same as mod).
+        description: One-line purpose for the mod.
+        apply: If True, also create doc stubs on disk.
+    """
+    from pipeio.notebook.analyze import analyze_notebook
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    if not rule_name:
+        rule_name = mod
+
+    # --- Step 1: Analyze notebook ---
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        return {"error": f"Notebook not found: {name}"}
+
+    analysis = analyze_notebook(py_path)
+
+    # Extract imports for the script
+    import_lines: list[str] = []
+    for imp in analysis.get("imports", []):
+        if imp.get("kind") == "import":
+            line = f"import {imp['module']}"
+            if imp.get("alias"):
+                line += f" as {imp['alias']}"
+            import_lines.append(line)
+        elif imp.get("kind") == "from":
+            names = ", ".join(imp.get("names", []))
+            import_lines.append(f"from {imp['module']} import {names}")
+
+    # --- Step 2: Generate script skeleton ---
+    script_name = f"{mod}.py"
+    script_path = flow_dir / "scripts" / script_name
+
+    desc_text = description or f"Processing script for mod: {mod}"
+    script_lines: list[str] = [
+        f'"""{desc_text}',
+        f"",
+        f"Promoted from notebook: {name}",
+        f'"""',
+        "",
+        "from pathlib import Path",
+        "",
+    ]
+    if import_lines:
+        script_lines.extend(import_lines)
+        script_lines.append("")
+
+    script_lines.extend([
+        "",
+        "def main(snakemake):",
+        '    """Entry point called by Snakemake rule."""',
+        "",
+        "    # --- Inputs ---",
+        "    # TODO: unpack snakemake.input",
+        "",
+        "    # --- Outputs ---",
+        "    # TODO: unpack snakemake.output",
+        "",
+        "    # --- Processing ---",
+        "    # TODO: extract core logic from notebook",
+        "    pass",
+        "",
+        "",
+        'if __name__ == "__main__":',
+        "    main(snakemake)  # noqa: F821",
+        "",
+    ])
+
+    script_content = "\n".join(script_lines)
+    script_exists = script_path.exists()
+
+    if not script_exists:
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(script_content, encoding="utf-8")
+
+    # --- Step 3: Generate rule stub ---
+    rule_stub = (
+        f"rule {rule_name}:\n"
+        f"    input:\n"
+        f"        # TODO: define inputs\n"
+        f"    output:\n"
+        f"        # TODO: define outputs\n"
+        f"    script:\n"
+        f'        "scripts/{script_name}"\n'
+    )
+
+    # --- Step 4: Scaffold mod docs (if apply=True) ---
+    docs_created: list[str] = []
+    if apply:
+        result = mcp_mod_create(
+            root, flow=flow, mod=mod,
+            description=desc_text, from_notebook=name,
+        )
+        if "error" not in result:
+            docs_created = result.get("created_docs", [])
+
+    # --- Step 5: Build result ---
+    try:
+        script_rel = str(script_path.relative_to(root))
+    except ValueError:
+        script_rel = str(script_path)
+
+    return {
+        "flow": flow,
+        "notebook": name,
+        "mod": mod,
+        "rule_name": rule_name,
+        "analysis": {
+            "sections": analysis.get("sections", []),
+            "imports": len(analysis.get("imports", [])),
+            "cells": analysis.get("cell_count", 0),
+        },
+        "script": {
+            "path": script_rel,
+            "created": not script_exists,
+            "exists": script_exists,
+        },
+        "rule_stub": rule_stub,
+        "docs_created": docs_created,
+        "next_steps": [
+            f"Edit {script_rel}: extract core processing logic from notebook",
+            f"Review rule stub and insert into Snakefile via pipeio_rule_insert",
+            f"Add output registry group via pipeio_config_patch",
+            f"Fill in docs/{mod}/theory.md with scientific rationale",
+            f"Fill in docs/{mod}/spec.md with I/O contracts",
+        ],
     }
 
 
@@ -3683,15 +4760,14 @@ def mcp_cross_flow(
     root: Path,
     flow: str | None = None,
 ) -> dict[str, Any]:
-    """Map output_registry → input_registry chains across flows.
+    """Map output_manifest → input_manifest chains across flows.
 
-    For each flow that declares an ``input_registry`` in its config, finds
-    which other flow's ``output_registry`` matches.  Detects stale or broken
-    references.
+    For each flow that declares an ``input_manifest`` (or legacy
+    ``input_registry``) in its config, finds which other flow's
+    ``output_manifest`` matches.  Detects stale or broken references.
 
     Args:
         root: Project root.
-        pipe: Filter by pipeline name (optional).
         flow: Filter by flow name (optional).
     """
     import yaml
@@ -3702,11 +4778,11 @@ def mcp_cross_flow(
         return _NO_REGISTRY
 
     registry = PipelineRegistry.from_yaml(registry_path)
-    flows = registry.list_flows(prefix=prefix)
+    all_flows = registry.list_flows()
 
-    # Build flow metadata with input/output registry paths
+    # Build flow metadata with input/output manifest paths
     flow_meta: list[dict[str, Any]] = []
-    for entry in flows:
+    for entry in all_flows:
         if not entry.config_path:
             continue
         cfg_path = Path(entry.config_path)
@@ -3720,48 +4796,47 @@ def mcp_cross_flow(
         except Exception:
             continue
 
+        input_manifest = raw.get("input_manifest", "")
+        output_manifest = raw.get("output_manifest", "")
+
         flow_meta.append({
             "flow": entry.name,
-            "flow": entry.name,
-            "flow_id": f"{entry.name}/{entry.name}",
             "input_dir": raw.get("input_dir", ""),
-            "input_registry": raw.get("input_registry", ""),
+            "input_manifest": input_manifest,
             "output_dir": raw.get("output_dir", ""),
-            "output_registry": raw.get("output_registry", ""),
+            "output_manifest": output_manifest,
         })
 
-    # Build output_registry → flow mapping
+    # Build output_manifest → flow mapping
     output_map: dict[str, str] = {}
     for fm in flow_meta:
-        if fm["output_registry"]:
-            output_map[fm["output_registry"]] = fm["flow_id"]
+        if fm["output_manifest"]:
+            output_map[fm["output_manifest"]] = fm["flow"]
 
-    # Build chains: for each flow with input_registry, find its source
+    # Build chains: for each flow with input_manifest, find its source
     chains: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
 
     for fm in flow_meta:
-        if not fm["input_registry"]:
+        if not fm["input_manifest"]:
             continue
 
-        input_reg = fm["input_registry"]
-        source_flow = output_map.get(input_reg)
+        input_manifest = fm["input_manifest"]
+        source_flow = output_map.get(input_manifest)
 
         chain_entry: dict[str, Any] = {
-            "consumer": fm["flow_id"],
-            "input_registry": input_reg,
+            "consumer": fm["flow"],
+            "input_manifest": input_manifest,
             "producer": source_flow,
         }
 
         if source_flow:
-            # Check if the directory exists
-            dir_exists = (root / input_reg).exists() if input_reg else False
+            dir_exists = (root / input_manifest).exists() if input_manifest else False
             chain_entry["dir_exists"] = dir_exists
             chains.append(chain_entry)
         else:
-            # Input registry not produced by any known flow
             chain_entry["status"] = "unresolved"
-            chain_entry["hint"] = "No flow outputs to this registry"
+            chain_entry["hint"] = "No flow outputs to this manifest path"
             stale.append(chain_entry)
 
     # Filter to specific flow if requested

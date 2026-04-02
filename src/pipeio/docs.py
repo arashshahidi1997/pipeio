@@ -2,7 +2,7 @@
 
 Flow authors write docs next to their pipeline code::
 
-    code/pipelines/preproc/denoise/
+    code/pipelines/denoise/
       docs/
         index.md
         mod-smoothing.md
@@ -10,7 +10,7 @@ Flow authors write docs next to their pipeline code::
         notebook.yml
         analysis.py
 
-``docs_collect`` assembles them into ``docs/pipelines/<pipe>/<flow>/``
+``docs_collect`` assembles them into ``docs/pipelines/<flow>/``
 for MkDocs, and ``docs_nav`` emits a YAML nav fragment.
 """
 
@@ -22,6 +22,22 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import BaseModel
+
+
+class PublishConfig(BaseModel):
+    """Flow-level publish config (``publish.yml``)."""
+
+    dag: bool = False
+    report: bool = False
+    report_archive: bool = False
+    scripts: bool = False
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> PublishConfig:
+        with open(path) as fh:
+            raw = yaml.safe_load(fh) or {}
+        return cls(**raw)
 
 
 def _find_registry(root: Path) -> Path | None:
@@ -66,51 +82,111 @@ def docs_collect(root: Path) -> list[str]:
         target = docs_base / entry.name
 
         # --- 1. Collect hand-written docs ---
+        # Faceted mod docs (docs/{mod}/theory.md) → mods/{mod}/theory.md
+        # Flow-level docs (docs/index.md) → index.md (preserved as-is)
         flow_docs = flow_dir / "docs"
         if flow_docs.is_dir():
+            # Detect mod subdirectories (contain theory.md or spec.md)
+            mod_dirs = {
+                d.name for d in flow_docs.iterdir()
+                if d.is_dir() and any(
+                    (d / f).exists() for f in ("theory.md", "spec.md", "delta.md")
+                )
+            }
             for src_file in sorted(flow_docs.rglob("*")):
                 if not src_file.is_file():
                     continue
                 rel = src_file.relative_to(flow_docs)
-                dst = target / rel
+                parts = rel.parts
+                # Route mod facet dirs into mods/ subdirectory
+                if parts and parts[0] in mod_dirs:
+                    dst = target / "mods" / rel
+                else:
+                    dst = target / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_file, dst)
                 collected.append(str(dst))
 
         # --- 2. Publish notebooks ---
         nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
-        if not nb_cfg_path.exists():
-            continue
+        if nb_cfg_path.exists():
+            from pipeio.notebook.config import NotebookConfig
 
-        from pipeio.notebook.config import NotebookConfig
+            try:
+                nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+                nb_target = target / "notebooks"
+                fmt = nb_cfg.publish.format  # "html" or "myst"
 
-        try:
-            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
-        except Exception:
-            continue
+                for nb_entry in nb_cfg.entries:
+                    py_path = flow_dir / nb_entry.path
+                    name = py_path.stem
 
-        nb_target = target / "notebooks"
-        fmt = nb_cfg.publish.format  # "html" or "myst"
+                    # Use _nb_output_paths for workspace-aware path resolution
+                    from pipeio.notebook.lifecycle import _nb_output_paths
+                    ipynb_path, myst_path = _nb_output_paths(py_path)
 
-        for nb_entry in nb_cfg.entries:
-            py_path = flow_dir / nb_entry.path
-            name = py_path.stem
+                    # Explore notebooks are never published by default
+                    kind = getattr(nb_entry, "kind", "") or ""
+                    if kind in ("investigate", "explore") and not nb_entry.publish_html and not nb_entry.publish_myst:
+                        continue
 
-            if nb_entry.publish_html or (fmt == "html" and (nb_entry.publish_html or nb_entry.publish_myst)):
-                ipynb = py_path.with_suffix(".ipynb")
-                if ipynb.exists():
-                    nb_target.mkdir(parents=True, exist_ok=True)
-                    out = nb_target / f"{name}.html"
-                    _nbconvert_html(ipynb, out)
-                    collected.append(str(out))
+                    if nb_entry.publish_html or (fmt == "html" and (nb_entry.publish_html or nb_entry.publish_myst)):
+                        if ipynb_path.exists():
+                            nb_target.mkdir(parents=True, exist_ok=True)
+                            out = nb_target / f"{name}.html"
+                            _nbconvert_html(ipynb_path, out)
+                            collected.append(str(out))
 
-            if nb_entry.publish_myst and fmt == "myst":
-                myst = py_path.with_suffix(".md")
-                if myst.exists():
-                    nb_target.mkdir(parents=True, exist_ok=True)
-                    out = nb_target / f"{name}.md"
-                    shutil.copy2(myst, out)
-                    collected.append(str(out))
+                    if nb_entry.publish_myst and fmt == "myst":
+                        if myst_path.exists():
+                            nb_target.mkdir(parents=True, exist_ok=True)
+                            out = nb_target / f"{name}.md"
+                            shutil.copy2(myst_path, out)
+                            collected.append(str(out))
+            except Exception:
+                pass
+
+        # --- 3. publish.yml artifacts (DAG, report, scripts) ---
+        pub_cfg_path = flow_dir / "publish.yml"
+        if pub_cfg_path.exists():
+            try:
+                pub_cfg = PublishConfig.from_yaml(pub_cfg_path)
+            except Exception:
+                pub_cfg = PublishConfig()
+
+            # DAG: copy dag.svg if present
+            if pub_cfg.dag:
+                dag_src = flow_dir / "dag.svg"
+                if dag_src.exists():
+                    target.mkdir(parents=True, exist_ok=True)
+                    dst = target / "dag.svg"
+                    shutil.copy2(dag_src, dst)
+                    collected.append(str(dst))
+
+            # Report: copy latest report.html
+            if pub_cfg.report:
+                report_src = flow_dir / "report.html"
+                if report_src.exists():
+                    target.mkdir(parents=True, exist_ok=True)
+                    dst = target / "report.html"
+                    shutil.copy2(report_src, dst)
+                    collected.append(str(dst))
+
+            # Scripts: generate script index with git links
+            if pub_cfg.scripts:
+                scripts_dir = flow_dir / "scripts"
+                if scripts_dir.is_dir():
+                    script_files = sorted(scripts_dir.glob("*.py"))
+                    if script_files:
+                        target.mkdir(parents=True, exist_ok=True)
+                        dst = target / "scripts.md"
+                        dst.write_text(
+                            _generate_scripts_index(
+                                entry.name, script_files, flow_dir, root
+                            ),
+                            encoding="utf-8",
+                        )
+                        collected.append(str(dst))
 
     return collected
 
@@ -121,70 +197,93 @@ def docs_nav(root: Path) -> str:
     Returns a YAML string suitable for pasting into ``mkdocs.yml``::
 
         - Pipelines:
-          - preproc:
-            - denoise:
-              - Overview: pipelines/preproc/denoise/index.md
-              - Notebooks:
-                - Analysis: pipelines/preproc/denoise/notebooks/analysis.html
+          - denoise:
+            - Overview: pipelines/denoise/index.md
+            - Notebooks:
+              - Analysis: pipelines/denoise/notebooks/analysis.html
     """
     docs_root = root / "docs"
     docs_base = docs_root / "pipelines"
     if not docs_base.exists():
         return "# No docs/pipelines/ directory found.\n"
 
-    nav: dict[str, Any] = {}
+    flow_navs: list[dict[str, Any]] = []
 
-    for pipe_dir in sorted(d for d in docs_base.iterdir() if d.is_dir()):
-        pipe_nav: list[dict[str, Any]] = []
+    for flow_dir in sorted(d for d in docs_base.iterdir() if d.is_dir()):
+        flow_entries: list[dict[str, Any]] = []
 
-        for flow_dir in sorted(d for d in pipe_dir.iterdir() if d.is_dir()):
-            flow_entries: list[dict[str, Any]] = []
+        # index.md first
+        idx = flow_dir / "index.md"
+        if idx.exists():
+            flow_entries.append(
+                {"Overview": str(idx.relative_to(docs_root))}
+            )
 
-            # index.md first
-            idx = flow_dir / "index.md"
-            if idx.exists():
-                flow_entries.append(
-                    {"Overview": str(idx.relative_to(docs_root))}
-                )
+        # other .md files (excluding index)
+        for md in sorted(flow_dir.glob("*.md")):
+            if md.name == "index.md":
+                continue
+            title = md.stem.replace("-", " ").replace("_", " ").title()
+            flow_entries.append(
+                {title: str(md.relative_to(docs_root))}
+            )
 
-            # other .md files (excluding index)
-            for md in sorted(flow_dir.glob("*.md")):
-                if md.name == "index.md":
-                    continue
-                title = md.stem.replace("-", " ").replace("_", " ").title()
-                flow_entries.append(
-                    {title: str(md.relative_to(docs_root))}
-                )
+        # notebooks subdirectory
+        nb_dir = flow_dir / "notebooks"
+        if nb_dir.is_dir():
+            nb_entries: list[dict[str, str]] = []
+            for f in sorted(nb_dir.iterdir()):
+                if f.suffix in (".html", ".md") and f.is_file():
+                    title = f.stem.replace("-", " ").replace("_", " ").title()
+                    nb_entries.append(
+                        {title: str(f.relative_to(docs_root))}
+                    )
+            if nb_entries:
+                flow_entries.append({"Notebooks": nb_entries})
 
-            # notebooks subdirectory
-            nb_dir = flow_dir / "notebooks"
-            if nb_dir.is_dir():
-                nb_entries: list[dict[str, str]] = []
-                for f in sorted(nb_dir.iterdir()):
-                    if f.suffix in (".html", ".md") and f.is_file():
-                        title = f.stem.replace("-", " ").replace("_", " ").title()
-                        nb_entries.append(
-                            {title: str(f.relative_to(docs_root))}
-                        )
-                if nb_entries:
-                    flow_entries.append({"Notebooks": nb_entries})
+        if flow_entries:
+            flow_navs.append({flow_dir.name: flow_entries})
 
-            if flow_entries:
-                pipe_nav.append({flow_dir.name: flow_entries})
-
-        if pipe_nav:
-            nav[pipe_dir.name] = pipe_nav
-
-    if not nav:
+    if not flow_navs:
         return "# docs/pipelines/ exists but contains no docs.\n"
 
-    fragment = [{"Pipelines": nav}]
+    fragment = [{"Pipelines": flow_navs}]
     return yaml.dump(fragment, sort_keys=False, default_flow_style=False)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _generate_scripts_index(
+    flow_name: str,
+    script_files: list[Path],
+    flow_dir: Path,
+    root: Path,
+) -> str:
+    """Generate a markdown script index with git links."""
+    lines = [
+        f"# Scripts — {flow_name}",
+        "",
+        "| Script | Description |",
+        "|--------|-------------|",
+    ]
+    for sf in script_files:
+        rel = sf.relative_to(root)
+        # Extract docstring (first line of triple-quoted string)
+        desc = ""
+        try:
+            text = sf.read_text(encoding="utf-8")
+            if text.startswith('"""') or text.startswith("'''"):
+                end = text.find('"""', 3) if text.startswith('"""') else text.find("'''", 3)
+                if end > 0:
+                    desc = text[3:end].strip().split("\n")[0]
+        except Exception:
+            pass
+        lines.append(f"| [`{sf.name}`]({rel}) | {desc} |")
+    lines.append("")
+    return "\n".join(lines)
+
 
 def _nbconvert_html(nb_path: Path, output: Path) -> None:
     """Convert a notebook to HTML."""

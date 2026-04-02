@@ -479,142 +479,183 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
 
     flow = args.flow
     flow_dir = pipelines_dir / flow
-    if flow_dir.exists():
-        print(f"Flow directory already exists: {flow_dir}", file=sys.stderr)
-        return 1
+    is_new = not flow_dir.exists()
 
-    # Create directory structure
-    flow_dir.mkdir(parents=True)
-    (flow_dir / "scripts").mkdir()
-    (flow_dir / "docs").mkdir()
-    (flow_dir / "notebooks" / ".src").mkdir(parents=True)
-    (flow_dir / "notebooks" / ".myst").mkdir()
+    if flow_dir.exists() and (flow_dir / "Snakefile").exists():
+        print(f"Flow already exists: {flow_dir}", file=sys.stderr)
+        print(f"  Augmenting missing directories...", file=sys.stderr)
 
-    # config.yml
-    (flow_dir / "config.yml").write_text(
-        f"# config for {flow}\n"
-        f"input_dir: \"\"\n"
-        f"output_dir: \"\"\n"
-        f"registry: {{}}\n",
-        encoding="utf-8",
-    )
+    # Create directory structure (idempotent — fills in missing dirs)
+    flow_dir.mkdir(parents=True, exist_ok=True)
+    created: list[str] = []
 
-    # Snakefile
-    (flow_dir / "Snakefile").write_text(
-        f"# Snakefile for {flow}\n"
-        f"from pathlib import Path\n"
-        f"\n"
-        f"configfile: \"config.yml\"\n"
-        f"\n"
-        f"\n"
-        f"rule all:\n"
-        f"    input: []\n",
-        encoding="utf-8",
-    )
+    for d in [
+        "scripts",
+        "rules",
+        "docs",
+        "notebooks/explore/.src",
+        "notebooks/explore/.myst",
+        "notebooks/demo/.src",
+        "notebooks/demo/.myst",
+    ]:
+        path = flow_dir / d
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            created.append(d)
 
-    # Makefile (delegates to pipeio CLI)
-    (flow_dir / "Makefile").write_text(
-        f"# Flow: {flow}\n"
-        f"# Notebook and pipeline operations delegate to pipeio CLI.\n"
-        f"SHELL := /bin/bash\n"
-        f"\n"
-        f".PHONY: help nb-status nb-sync nb-lab nb-publish\n"
-        f"\n"
-        f"help:\n"
-        f"\t@echo \"Targets: nb-status nb-sync nb-lab nb-publish\"\n"
-        f"\n"
-        f"nb-status:\n"
-        f"\tpipeio nb status\n"
-        f"\n"
-        f"nb-sync:\n"
-        f"\tpipeio nb sync --direction py2nb\n"
-        f"\n"
-        f"nb-lab:\n"
-        f"\tpipeio nb lab\n"
-        f"\n"
-        f"nb-publish:\n"
-        f"\tpipeio nb sync --direction py2nb --force\n"
-        f"\tpipeio nb publish\n",
-        encoding="utf-8",
-    )
+    # config.yml (only if new)
+    cfg_path = flow_dir / "config.yml"
+    if not cfg_path.exists():
+        cfg_path.write_text(
+            f"# config for {flow}\n"
+            f"input_dir: \"\"\n"
+            f"output_dir: \"derivatives/{flow}\"\n"
+            f"input_manifest: \"\"\n"
+            f"output_manifest: \"derivatives/{flow}/manifest.yml\"\n"
+            f"registry: {{}}\n",
+            encoding="utf-8",
+        )
+        created.append("config.yml")
 
-    # notebook.yml (empty but valid)
-    (flow_dir / "notebooks" / "notebook.yml").write_text(
-        f"# Notebook config for {flow}\n"
-        f"kernel: \"\"\n"
-        f"publish:\n"
-        f"  docs_dir: \"\"\n"
-        f"  prefix: \"nb-\"\n"
-        f"entries: []\n",
-        encoding="utf-8",
-    )
+    # Snakefile (only if new)
+    snakefile = flow_dir / "Snakefile"
+    if not snakefile.exists():
+        snakefile.write_text(
+            f"# Snakefile for {flow}\n"
+            f"from pathlib import Path\n"
+            f"\n"
+            f"configfile: \"config.yml\"\n"
+            f"\n"
+            f"\n"
+            f"rule all:\n"
+            f"    input: []\n",
+            encoding="utf-8",
+        )
+        created.append("Snakefile")
 
-    # docs/index.md
-    (flow_dir / "docs" / "index.md").write_text(
-        f"# {flow}\n"
-        f"\n"
-        f"Flow: `{flow}`\n"
-        f"\n"
-        f"## Mods\n"
-        f"\n"
-        f"(none yet)\n",
-        encoding="utf-8",
-    )
+    # publish.yml (only if new)
+    pub_path = flow_dir / "publish.yml"
+    if not pub_path.exists():
+        pub_path.write_text(
+            f"dag: true\n"
+            f"report: false\n"
+            f"scripts: true\n",
+            encoding="utf-8",
+        )
+        created.append("publish.yml")
 
-    # Starter notebook
-    nb_name = f"explore_{flow}"
-    nb_path = flow_dir / "notebooks" / ".src" / f"{nb_name}.py"
-    nb_path.write_text(
-        f"# ---\n"
-        f"# jupyter:\n"
-        f"#   jupytext:\n"
-        f"#     text_representation:\n"
-        f"#       format_name: percent\n"
-        f"# ---\n"
-        f"\n"
-        f"# %% [markdown]\n"
-        f"# # Explore {flow.replace('_', ' ').title()}\n"
-        f"#\n"
-        f"# Initial exploration notebook for {flow}.\n"
-        f"\n"
-        f"# %% [markdown]\n"
-        f"# ## Setup\n"
-        f"\n"
-        f"# %%\n"
-        f"from pathlib import Path\n"
-        f"\n"
-        f"# %% [markdown]\n"
-        f"# ## Analysis\n"
-        f"\n"
-        f"# %%\n",
-        encoding="utf-8",
-    )
+    # Makefile (only if new)
+    makefile = flow_dir / "Makefile"
+    if not makefile.exists():
+        makefile.write_text(
+            f"# Flow: {flow}\n"
+            f"SHELL := /bin/bash\n"
+            f"\n"
+            f"# Project root (relative to this Makefile)\n"
+            f"PROJECT_ROOT ?= $(shell git -C $(dir $(abspath $(lastword $(MAKEFILE_LIST)))) rev-parse --show-toplevel)\n"
+            f"\n"
+            f".PHONY: help run dry-run nb-status nb-sync nb-lab nb-publish\n"
+            f"\n"
+            f"help:\n"
+            f"\t@echo \"Targets: run dry-run nb-status nb-sync nb-lab nb-publish\"\n"
+            f"\n"
+            f"run:\n"
+            f"\tsnakemake --snakefile $(CURDIR)/Snakefile --directory $(PROJECT_ROOT) -j1\n"
+            f"\n"
+            f"dry-run:\n"
+            f"\tsnakemake --snakefile $(CURDIR)/Snakefile --directory $(PROJECT_ROOT) -j1 -n\n"
+            f"\n"
+            f"nb-status:\n"
+            f"\tpipeio nb status\n"
+            f"\n"
+            f"nb-sync:\n"
+            f"\tpipeio nb sync --direction py2nb\n"
+            f"\n"
+            f"nb-lab:\n"
+            f"\tpipeio nb lab\n"
+            f"\n"
+            f"nb-publish:\n"
+            f"\tpipeio nb sync --direction py2nb --force\n"
+            f"\tpipeio nb publish\n",
+            encoding="utf-8",
+        )
+        created.append("Makefile")
 
-    # Register starter notebook in notebook.yml
-    import yaml
-    nb_cfg = {
-        "kernel": "",
-        "publish": {"docs_dir": "", "prefix": "nb-"},
-        "entries": [{
-            "path": f"notebooks/.src/{nb_name}.py",
-            "kind": "explore",
-            "description": f"Initial exploration for {flow}",
-            "status": "draft",
-            "pair_ipynb": True,
-            "pair_myst": True,
-        }],
-    }
-    (flow_dir / "notebooks" / "notebook.yml").write_text(
-        yaml.safe_dump(nb_cfg, sort_keys=False, default_flow_style=False),
-        encoding="utf-8",
-    )
+    # notebook.yml (only if new)
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if not nb_cfg_path.exists():
+        nb_name = f"explore_{flow}"
+        nb_path = flow_dir / "notebooks" / "explore" / ".src" / f"{nb_name}.py"
+        nb_path.write_text(
+            f"# ---\n"
+            f"# jupyter:\n"
+            f"#   jupytext:\n"
+            f"#     text_representation:\n"
+            f"#       format_name: percent\n"
+            f"# ---\n"
+            f"\n"
+            f"# %% [markdown]\n"
+            f"# # Explore {flow.replace('_', ' ').title()}\n"
+            f"#\n"
+            f"# Initial exploration notebook for {flow}.\n"
+            f"\n"
+            f"# %% [markdown]\n"
+            f"# ## Setup\n"
+            f"\n"
+            f"# %%\n"
+            f"from pathlib import Path\n"
+            f"\n"
+            f"# %% [markdown]\n"
+            f"# ## Analysis\n"
+            f"\n"
+            f"# %%\n",
+            encoding="utf-8",
+        )
 
-    print(f"Created flow scaffold: {flow_dir}")
-    print(f"  Snakefile, config.yml, Makefile")
-    print(f"  scripts/")
-    print(f"  docs/index.md")
-    print(f"  notebooks/.src/{nb_name}.py (starter notebook)")
-    print(f"  notebooks/notebook.yml")
+        import yaml
+        nb_cfg = {
+            "kernel": "",
+            "publish": {"docs_dir": "", "prefix": "nb-"},
+            "entries": [{
+                "path": f"notebooks/explore/.src/{nb_name}.py",
+                "kind": "explore",
+                "description": f"Initial exploration for {flow}",
+                "status": "draft",
+                "pair_ipynb": True,
+                "pair_myst": True,
+            }],
+        }
+        nb_cfg_path.write_text(
+            yaml.safe_dump(nb_cfg, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        created.append("notebook.yml")
+        created.append(f"notebooks/explore/.src/{nb_name}.py")
+
+    # docs/index.md (only if new)
+    docs_index = flow_dir / "docs" / "index.md"
+    if not docs_index.exists():
+        docs_index.write_text(
+            f"# {flow}\n"
+            f"\n"
+            f"Flow: `{flow}`\n"
+            f"\n"
+            f"## Mods\n"
+            f"\n"
+            f"(none yet)\n",
+            encoding="utf-8",
+        )
+        created.append("docs/index.md")
+
+    if is_new:
+        print(f"Created flow scaffold: {flow_dir}")
+    else:
+        print(f"Augmented flow: {flow_dir}")
+    if created:
+        for c in created:
+            print(f"  + {c}")
+    else:
+        print("  (nothing missing)")
     return 0
 
 

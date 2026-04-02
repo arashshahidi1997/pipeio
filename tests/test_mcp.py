@@ -38,8 +38,8 @@ def _scaffold_project(root: Path) -> Path:
     # Write registry
     reg = {"flows": {"denoise": {"name": "denoise",
                 "flow": "denoise",
-                "code_path": "code/pipelines/preproc/denoise",
-                "config_path": "code/pipelines/preproc/denoise/config.yml",
+                "code_path": "code/pipelines/denoise",
+                "config_path": "code/pipelines/denoise/config.yml",
             }
         }
     }
@@ -226,8 +226,8 @@ def _scaffold_project_with_mods(root: Path) -> Path:
 
     reg = {"flows": {"denoise": {"name": "denoise",
                 "flow": "denoise",
-                "code_path": "code/pipelines/preproc/denoise",
-                "config_path": "code/pipelines/preproc/denoise/config.yml",
+                "code_path": "code/pipelines/denoise",
+                "config_path": "code/pipelines/denoise/config.yml",
                 "mods": {"filter": {"name": "filter",
                         "rules": ["filter_raw", "filter_notch"],
                         "doc_path": None,
@@ -445,8 +445,8 @@ def _scaffold_config_project(root: Path, config_text: str = _CONFIG_WITH_PYBIDS)
 
     reg = {"flows": {"denoise": {"name": "denoise",
                 "flow": "denoise",
-                "code_path": "code/pipelines/preproc/denoise",
-                "config_path": "code/pipelines/preproc/denoise/config.yml",
+                "code_path": "code/pipelines/denoise",
+                "config_path": "code/pipelines/denoise/config.yml",
             }
         }
     }
@@ -831,7 +831,7 @@ def test_mcp_nb_update_changes_status(tmp_path):
     # Verify persisted
     from pipeio.notebook.config import NotebookConfig
     nb_cfg_path = (
-        tmp_path / "code" / "pipelines" / "notebooks" / "notebook.yml"
+        tmp_path / "code" / "pipelines" / "denoise" / "notebooks" / "notebook.yml"
     )
     nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
     assert nb_cfg.entries[0].status == "stale"
@@ -886,13 +886,38 @@ def test_mcp_nb_create_persists_metadata(tmp_path):
 
     from pipeio.notebook.config import NotebookConfig
     nb_cfg_path = (
-        tmp_path / "code" / "pipelines" / "notebooks" / "notebook.yml"
+        tmp_path / "code" / "pipelines" / "denoise" / "notebooks" / "notebook.yml"
     )
     nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
     entry = nb_cfg.entries[0]
     assert entry.kind == "explore"
     assert entry.description == "Explore LFP band power"
     assert entry.status == "active"
+    # Explore notebooks go to explore/ workspace
+    assert "explore/.src/" in entry.path
+
+
+def test_mcp_nb_create_workspace_routing(tmp_path):
+    """Verify notebooks are routed to correct workspace directories."""
+    from pipeio.mcp import mcp_nb_create
+
+    _scaffold_project(tmp_path)
+
+    # Investigate → explore/ workspace
+    result = mcp_nb_create(
+        tmp_path, flow="denoise",
+        name="investigate_noise", kind="investigate")
+    assert "error" not in result
+    assert (tmp_path / "code" / "pipelines" / "denoise" /
+            "notebooks" / "explore" / ".src" / "investigate_noise.py").exists()
+
+    # Demo → demo/ workspace
+    result = mcp_nb_create(
+        tmp_path, flow="denoise",
+        name="demo_filter", kind="demo")
+    assert "error" not in result
+    assert (tmp_path / "code" / "pipelines" / "denoise" /
+            "notebooks" / "demo" / ".src" / "demo_filter.py").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -938,18 +963,20 @@ def _scaffold_mod_context_project(root: Path) -> Path:
         "import mne\n# notch filter\n", encoding="utf-8"
     )
 
-    # Mod doc
-    doc_dir = root / "docs" / "pipelines" / "pipe-preproc" / "flow-denoise" / "mod-filter"
-    doc_dir.mkdir(parents=True)
-    (doc_dir / "index.md").write_text("# Filter Module\nApplies filtering.\n", encoding="utf-8")
+    # Mod doc (flow-local docs directory)
+    doc_dir = flow_dir / "docs"
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    mod_doc_dir = doc_dir / "mod-filter"
+    mod_doc_dir.mkdir()
+    (mod_doc_dir / "index.md").write_text("# Filter Module\nApplies filtering.\n", encoding="utf-8")
 
     reg = {"flows": {"denoise": {"name": "denoise",
                 "flow": "denoise",
-                "code_path": "code/pipelines/preproc/denoise",
-                "config_path": "code/pipelines/preproc/denoise/config.yml",
+                "code_path": "code/pipelines/denoise",
+                "config_path": "code/pipelines/denoise/config.yml",
                 "mods": {"filter": {"name": "filter",
                         "rules": ["filter_raw", "filter_notch"],
-                        "doc_path": None,
+                        "doc_path": "code/pipelines/denoise/docs/mod-filter",
                     }
                 },
             }
@@ -993,6 +1020,29 @@ def test_mcp_mod_context_reads_doc(tmp_path):
     assert "Filter Module" in result["doc"]
 
 
+def test_mcp_mod_context_reads_faceted_docs(tmp_path):
+    """Faceted docs (theory.md, spec.md) take priority over legacy mod-{mod}/."""
+    from pipeio.mcp import mcp_mod_context
+
+    _scaffold_mod_context_project(tmp_path)
+    # Add faceted docs alongside the legacy mod-filter/ dir
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+    facet_dir = flow_dir / "docs" / "filter"
+    facet_dir.mkdir(parents=True, exist_ok=True)
+    (facet_dir / "theory.md").write_text("# Filter Theory\nWe use bandpass.\n", encoding="utf-8")
+    (facet_dir / "spec.md").write_text("# Filter Spec\nI/O contract.\n", encoding="utf-8")
+
+    result = mcp_mod_context(tmp_path, flow="denoise", mod="filter")
+
+    assert result["doc"] is not None
+    assert "Filter Theory" in result["doc"]
+    assert result["doc_facets"] is not None
+    assert "theory" in result["doc_facets"]
+    assert "spec" in result["doc_facets"]
+    assert "Filter Theory" in result["doc_facets"]["theory"]
+    assert "Filter Spec" in result["doc_facets"]["spec"]
+
+
 def test_mcp_mod_context_extracts_config_params(tmp_path):
     from pipeio.mcp import mcp_mod_context
 
@@ -1020,3 +1070,206 @@ def test_mcp_mod_context_bids_signatures(tmp_path):
 
     assert "deriv" in result["bids_signatures"]
     assert "cleaned" in result["bids_signatures"]["deriv"]
+
+
+# ---------------------------------------------------------------------------
+# mcp_mod_audit
+# ---------------------------------------------------------------------------
+
+def test_mcp_mod_audit_healthy(tmp_path):
+    from pipeio.mcp import mcp_mod_audit
+
+    _scaffold_mod_context_project(tmp_path)
+    # Add faceted docs so audit passes doc coverage
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+    doc_dir = flow_dir / "docs" / "filter"
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    (doc_dir / "theory.md").write_text("# Filter Theory\nBandpass filtering.\n", encoding="utf-8")
+    (doc_dir / "spec.md").write_text("# Filter Spec\nI/O contract details.\n", encoding="utf-8")
+
+    result = mcp_mod_audit(tmp_path, flow="denoise", mod="filter")
+
+    assert "error" not in result
+    assert result["healthy"] is True
+    assert result["mods_audited"] == 1
+    assert result["mods"][0]["mod"] == "filter"
+
+
+def test_mcp_mod_audit_missing_docs(tmp_path):
+    from pipeio.mcp import mcp_mod_audit
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_audit(tmp_path, flow="denoise", mod="filter")
+
+    assert result["healthy"] is True  # missing docs are info, not errors
+    doc_findings = [
+        f for f in result["mods"][0]["findings"]
+        if f["check"] == "doc_coverage"
+    ]
+    assert len(doc_findings) >= 1  # at least theory.md or spec.md missing
+
+
+def test_mcp_mod_audit_missing_script(tmp_path):
+    from pipeio.mcp import mcp_mod_audit
+
+    _scaffold_mod_context_project(tmp_path)
+    # Remove a script that rules reference
+    (tmp_path / "code" / "pipelines" / "denoise" / "scripts" / "filter_raw.py").unlink()
+
+    result = mcp_mod_audit(tmp_path, flow="denoise", mod="filter")
+
+    assert result["healthy"] is False
+    assert result["total_errors"] >= 1
+    script_errs = [
+        f for f in result["mods"][0]["findings"]
+        if f["check"] == "script_exists"
+    ]
+    assert len(script_errs) >= 1
+
+
+def test_mcp_mod_audit_all_mods(tmp_path):
+    from pipeio.mcp import mcp_mod_audit
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_audit(tmp_path, flow="denoise")
+
+    assert "error" not in result
+    assert result["mods_audited"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# mcp_nb_promote
+# ---------------------------------------------------------------------------
+
+def test_mcp_nb_promote_creates_script(tmp_path):
+    from pipeio.mcp import mcp_nb_promote
+
+    _scaffold_notebook_project(tmp_path)
+    result = mcp_nb_promote(
+        tmp_path, flow="denoise",
+        name="investigate_noise", mod="noise_analysis",
+        description="Noise characterization")
+
+    assert "error" not in result
+    assert result["script"]["created"] is True
+    assert result["mod"] == "noise_analysis"
+    assert "rule_stub" in result
+    assert "rule noise_analysis:" in result["rule_stub"]
+    assert len(result["next_steps"]) > 0
+
+    # Script file should exist
+    script = tmp_path / "code" / "pipelines" / "denoise" / "scripts" / "noise_analysis.py"
+    assert script.exists()
+    content = script.read_text()
+    assert "Promoted from notebook: investigate_noise" in content
+
+
+# ---------------------------------------------------------------------------
+# mcp_mod_doc_refresh
+# ---------------------------------------------------------------------------
+
+def test_mcp_mod_doc_refresh_spec(tmp_path):
+    from pipeio.mcp import mcp_mod_doc_refresh
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_doc_refresh(tmp_path, flow="denoise", mod="filter", facet="spec")
+
+    assert "error" not in result
+    assert result["facet"] == "spec"
+    assert result["applied"] is False
+    assert "## Rules" in result["content"]
+    assert "filter_raw" in result["content"]
+    assert "## I/O Contract" in result["content"]
+
+
+def test_mcp_mod_doc_refresh_apply(tmp_path):
+    from pipeio.mcp import mcp_mod_doc_refresh
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_mod_doc_refresh(
+        tmp_path, flow="denoise", mod="filter", facet="spec", apply=True)
+
+    assert result["applied"] is True
+    doc = tmp_path / "code" / "pipelines" / "denoise" / "docs" / "filter" / "spec.md"
+    assert doc.exists()
+    assert "filter_raw" in doc.read_text()
+
+
+# ---------------------------------------------------------------------------
+# mcp_script_create
+# ---------------------------------------------------------------------------
+
+def test_mcp_script_create(tmp_path):
+    from pipeio.mcp import mcp_script_create
+
+    _scaffold_mod_context_project(tmp_path)
+    result = mcp_script_create(
+        tmp_path, flow="denoise", mod="filter",
+        script_name="filter_adaptive",
+        description="Adaptive bandpass filter",
+        inputs={"eeg": "raw EEG data"},
+        outputs={"filtered": "filtered output"},
+    )
+
+    assert "error" not in result
+    assert result["io_wiring"] is True
+    script = tmp_path / "code" / "pipelines" / "denoise" / "scripts" / "filter_adaptive.py"
+    assert script.exists()
+    content = script.read_text()
+    assert "Adaptive bandpass filter" in content
+    assert "snakemake.input.eeg" in content
+    assert "snakemake.output.filtered" in content
+
+
+def test_mcp_script_create_duplicate(tmp_path):
+    from pipeio.mcp import mcp_script_create
+
+    _scaffold_mod_context_project(tmp_path)
+    # filter_raw.py already exists from scaffold
+    result = mcp_script_create(
+        tmp_path, flow="denoise", mod="filter",
+        script_name="filter_raw")
+
+    assert "error" in result
+    assert "already exists" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# nb_create kind-aware templates
+# ---------------------------------------------------------------------------
+
+def test_mcp_nb_create_investigate_template(tmp_path):
+    from pipeio.mcp import mcp_nb_create
+
+    _scaffold_project(tmp_path)
+    result = mcp_nb_create(
+        tmp_path, flow="denoise",
+        name="investigate_artifacts", kind="investigate",
+        description="Check for artifacts")
+
+    assert "error" not in result
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+    nb = flow_dir / "notebooks" / "explore" / ".src" / "investigate_artifacts.py"
+    assert nb.exists()
+    content = nb.read_text()
+    assert "## Data Loading" in content
+    assert "## Findings" in content
+    assert "yaml" in content  # config loading
+
+
+def test_mcp_nb_create_demo_template(tmp_path):
+    from pipeio.mcp import mcp_nb_create
+
+    _scaffold_project(tmp_path)
+    result = mcp_nb_create(
+        tmp_path, flow="denoise",
+        name="demo_results", kind="demo",
+        description="Show final results")
+
+    assert "error" not in result
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+    nb = flow_dir / "notebooks" / "demo" / ".src" / "demo_results.py"
+    assert nb.exists()
+    content = nb.read_text()
+    assert "## Visualization" in content
+    assert "## Summary" in content

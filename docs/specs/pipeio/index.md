@@ -8,40 +8,23 @@ pipeio makes pipeline knowledge (registry, configs, rules, contracts, notebooks)
 
 | Spec | Domain | Status |
 |------|--------|--------|
-| [Overview & Architecture](overview.md) | Package scope, design principles, ecosystem fit | Draft |
-| [Registry](registry.md) | Pipe/flow/mod hierarchy, YAML schema, scan & validation | **Implemented** |
-| [Flow Config](flow-config.md) | Per-flow `config.yml` schema, output registry (data contracts) | **Implemented** |
-| [Path Resolution](path-resolution.md) | `PathResolver` protocol, `PipelineContext`, `Session`, `Stage` | **Implemented** (SimpleResolver) |
-| [Notebook Lifecycle](notebook.md) | Pair, sync, execute, publish — replacing Makefile shell scripts | Draft |
-| [Scaffolding](scaffolding.md) | Flow and mod creation from templates | Partial (`flow new` works) |
-| [Contracts](contracts.md) | Declarative input/output validation framework | Draft (models defined) |
-| [CLI](cli.md) | Command-line interface design | **Implemented** (core commands) |
-| [MCP Tools](mcp-tools.md) | Agent-facing tools via projio MCP server | **Implemented** |
-
-## Implementation Status
-
-| Module | Status | Notes |
-|--------|--------|-------|
-| `registry.py` | **Done** | `from_yaml`, `to_yaml`, `get`, `scan`, `validate`, `slug_ok` |
-| `config.py` | **Done** | `from_yaml`, `extra_inputs`, `groups`, `products`, `validate_config` |
-| `resolver.py` | **Done** | `PathResolver` protocol, `SimpleResolver`, `PipelineContext`, `Session`, `Stage` |
-| `cli.py` | **Done** | `init`, `flow list`, `flow new`, `registry scan`, `registry validate` |
-| `mcp.py` | **Done** | `mcp_flow_list`, `mcp_flow_status`, `mcp_nb_status`, `mcp_registry_validate` |
-| `contracts.py` | Partial | Models defined (`Check`, `Contract`, `ContractResult`), no CLI wiring |
-| `notebook/` | Stub | Config models only; lifecycle (pair/sync/exec/publish) not implemented |
-| `adapters/bids.py` | Stub | `BidsResolver` shell; requires `pipeio[bids]` |
-| `scaffold/` | Stub | `flow new` works via CLI; no template engine yet |
-
-## Reference Implementation
-
-These specs are derived from an audit of the pixecog project's pipeline infrastructure (`code/utils/io/`, `code/pipelines/`, `workflow/`). The audit document lives at `pixecog/prompts/plan/pipeio-audit-and-design.md`.
+| [Ontology](ontology.md) | Flow/mod/rule hierarchy, directory layout, naming conventions, lifecycle states | **Canonical** |
+| [Code Tiers](code-tiers.md) | Libraries, utils, and flow scripts — scaffolding, promotion, and audit across tiers | **Spec** |
+| [Registry](registry.md) | Flow/mod hierarchy, YAML schema, scan & validation | Implemented |
+| [Flow Config](flow-config.md) | Per-flow `config.yml` schema, output registry (data contracts) | Implemented |
+| [Path Resolution](path-resolution.md) | `PathResolver` protocol, `PipelineContext`, `Session`, `Stage` | Implemented |
+| [Notebook Lifecycle](notebook.md) | Workspaces (explore/demo), pair, sync, execute, publish, promote | Implemented |
+| [Scaffolding](scaffolding.md) | Flow and mod creation, kind-aware notebooks, tier-aware scripts | Implemented |
+| [Contracts](contracts.md) | Declarative input/output validation, cross-flow manifest chains | Implemented |
+| [CLI](cli.md) | Command-line interface design | Implemented |
+| [MCP Tools](mcp-tools.md) | Agent-facing tools via projio MCP server | Implemented (50+ tools) |
 
 ## Design Principles
 
 1. **Agent-facing authoring layer** — pipeio makes pipeline knowledge queryable and provides safe authoring operations; it does not own execution, provenance, or path resolution
-2. **One flow = one derivative** — each flow is a self-contained snakebids app producing one derivative directory; `pipe` is a category tag
+2. **One flow = one derivative** — each flow is a self-contained snakebids app producing one derivative directory; flow names are globally unique
 3. **Delegation over duplication** — execution → Snakemake, provenance → DataLad, paths → snakebids `bids()`, app lifecycle → snakebids
-4. **Declarative over imperative** — registries and configs are YAML; validation is schema-driven
-5. **Graceful degradation** — pipeio works without optional extras (`[bids]`, `[notebook]`)
+4. **Tier-aware scaffolding** — scripts and notebooks import from the right code tier (core library via codio, project utils via projio config)
+5. **Graceful degradation** — pipeio works without optional extras (`[bids]`, `[notebook]`) and without codio/biblio/notio
 6. **Search before creation** — registry queries help discover existing flows before scaffolding new ones
-7. **Notebook as first-class artifact** — the lifecycle (pair/sync/exec/publish) is managed, not ad-hoc
+7. **Notebook as first-class artifact** — explore/demo workspaces, kind-aware templates, full lifecycle management

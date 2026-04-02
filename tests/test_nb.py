@@ -122,7 +122,8 @@ def test_nb_status_synced_not_executed(tmp_path):
     ipynb = _make_ipynb(tmp_path, with_outputs=False)
     # Make ipynb newer than py
     import os
-    os.utime(ipynb, (py.stat().st_mtime + 10) * 2)
+    future = py.stat().st_mtime + 10
+    os.utime(ipynb, (future, future))
 
     statuses = nb_status(tmp_path)
     s = statuses[0]
@@ -135,7 +136,8 @@ def test_nb_status_executed(tmp_path):
     py = _make_py(tmp_path)
     ipynb = _make_ipynb(tmp_path, with_outputs=True)
     import os
-    os.utime(ipynb, (py.stat().st_mtime + 10) * 2)
+    future = py.stat().st_mtime + 10
+    os.utime(ipynb, (future, future))
 
     statuses = nb_status(tmp_path)
     s = statuses[0]
@@ -229,7 +231,8 @@ def test_nb_sync_updates_stale(tmp_path):
 
     # Make ipynb older than py
     import os, time
-    os.utime(ipynb, (py.stat().st_mtime - 10) * 2)
+    past = py.stat().st_mtime - 10
+    os.utime(ipynb, (past, past))
 
     calls = []
 
@@ -252,7 +255,8 @@ def test_nb_sync_skips_fresh(tmp_path):
     ipynb = _make_ipynb(tmp_path)
 
     import os
-    os.utime(ipynb, (py.stat().st_mtime + 10) * 2)
+    future = py.stat().st_mtime + 10
+    os.utime(ipynb, (future, future))
 
     calls = []
     with patch("pipeio.notebook.lifecycle._require_jupytext"):
@@ -262,6 +266,40 @@ def test_nb_sync_skips_fresh(tmp_path):
 
     assert updated == []
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# _nb_output_paths with workspace directories
+# ---------------------------------------------------------------------------
+
+def test_nb_output_paths_workspace_explore(tmp_path):
+    from pipeio.notebook.lifecycle import _nb_output_paths
+    py = tmp_path / "notebooks" / "explore" / ".src" / "investigate_noise.py"
+    py.parent.mkdir(parents=True)
+    py.touch()
+    ipynb, myst = _nb_output_paths(py)
+    assert ipynb == tmp_path / "notebooks" / "explore" / "investigate_noise.ipynb"
+    assert myst == tmp_path / "notebooks" / "explore" / ".myst" / "investigate_noise.md"
+
+
+def test_nb_output_paths_workspace_demo(tmp_path):
+    from pipeio.notebook.lifecycle import _nb_output_paths
+    py = tmp_path / "notebooks" / "demo" / ".src" / "demo_filter.py"
+    py.parent.mkdir(parents=True)
+    py.touch()
+    ipynb, myst = _nb_output_paths(py)
+    assert ipynb == tmp_path / "notebooks" / "demo" / "demo_filter.ipynb"
+    assert myst == tmp_path / "notebooks" / "demo" / ".myst" / "demo_filter.md"
+
+
+def test_nb_output_paths_flat(tmp_path):
+    from pipeio.notebook.lifecycle import _nb_output_paths
+    py = tmp_path / "notebooks" / ".src" / "analysis.py"
+    py.parent.mkdir(parents=True)
+    py.touch()
+    ipynb, myst = _nb_output_paths(py)
+    assert ipynb == tmp_path / "notebooks" / "analysis.ipynb"
+    assert myst == tmp_path / "notebooks" / ".myst" / "analysis.md"
 
 
 # ---------------------------------------------------------------------------

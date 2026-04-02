@@ -49,8 +49,8 @@ def _scaffold_project(root: Path, *, under_projio: bool = False) -> Path:
 
     # Write registry
     reg = {"flows": {"denoise": {"name": "denoise",
-                "code_path": "code/pipelines/preproc/denoise",
-                "config_path": "code/pipelines/preproc/denoise/config.yml",
+                "code_path": "code/pipelines/denoise",
+                "config_path": "code/pipelines/denoise/config.yml",
             }
         }
     }
@@ -155,6 +155,55 @@ def test_docs_collect_copies_flow_docs(tmp_path):
     assert (target / "mod-smoothing.md").exists()
 
 
+def test_docs_collect_faceted_mod_docs(tmp_path):
+    """Faceted mod docs (theory.md, spec.md) go to mods/{mod}/ in published docs."""
+    _scaffold_project(tmp_path)
+    # Add faceted docs
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+    facet_dir = flow_dir / "docs" / "filter"
+    facet_dir.mkdir(parents=True, exist_ok=True)
+    (facet_dir / "theory.md").write_text("# Theory\n", encoding="utf-8")
+    (facet_dir / "spec.md").write_text("# Spec\n", encoding="utf-8")
+
+    from pipeio.docs import docs_collect
+    collected = docs_collect(tmp_path)
+
+    target = tmp_path / "docs" / "pipelines" / "denoise"
+    # Faceted docs should be under mods/
+    assert (target / "mods" / "filter" / "theory.md").exists()
+    assert (target / "mods" / "filter" / "spec.md").exists()
+    # Flow-level docs still at root
+    assert (target / "index.md").exists()
+
+
+def test_docs_collect_publish_yml(tmp_path):
+    """publish.yml controls DAG, report, and scripts collection."""
+    _scaffold_project(tmp_path)
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+
+    # Create publish.yml
+    (flow_dir / "publish.yml").write_text(
+        "dag: true\nreport: true\nscripts: true\n", encoding="utf-8")
+
+    # Create artifacts
+    (flow_dir / "dag.svg").write_text("<svg/>", encoding="utf-8")
+    (flow_dir / "report.html").write_text("<html/>", encoding="utf-8")
+    scripts_dir = flow_dir / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "filter.py").write_text('"""Apply bandpass filter."""\n', encoding="utf-8")
+
+    from pipeio.docs import docs_collect
+    collected = docs_collect(tmp_path)
+
+    target = tmp_path / "docs" / "pipelines" / "denoise"
+    assert (target / "dag.svg").exists()
+    assert (target / "report.html").exists()
+    assert (target / "scripts.md").exists()
+    scripts_md = (target / "scripts.md").read_text()
+    assert "filter.py" in scripts_md
+    assert "bandpass" in scripts_md
+
+
 def test_docs_collect_no_registry(tmp_path):
     from pipeio.docs import docs_collect
     assert docs_collect(tmp_path) == []
@@ -235,9 +284,12 @@ def test_docs_nav_generates_yaml(tmp_path):
 
 
 def test_docs_nav_includes_notebooks(tmp_path):
-    target = tmp_path / "docs" / "pipelines" / "notebooks"
-    target.mkdir(parents=True)
-    (target / "analysis.html").touch()
+    flow_dir = tmp_path / "docs" / "pipelines" / "denoise"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "index.md").write_text("# Denoise\n", encoding="utf-8")
+    nb_dir = flow_dir / "notebooks"
+    nb_dir.mkdir()
+    (nb_dir / "analysis.html").touch()
 
     from pipeio.docs import docs_nav
     result = docs_nav(tmp_path)

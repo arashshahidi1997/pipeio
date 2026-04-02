@@ -60,25 +60,9 @@ class PipelineRegistry(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: Path) -> PipelineRegistry:
-        """Load a registry from a YAML file.
-
-        Backward compat: if old YAML has ``"pipe/flow"`` keys or entries
-        with a ``pipe`` field, the pipe part is silently discarded.
-        """
+        """Load a registry from a YAML file."""
         with open(path) as fh:
             raw = yaml.safe_load(fh) or {}
-
-        # Migrate old-format keys: "pipe/flow" → flow name
-        if "flows" in raw and isinstance(raw["flows"], dict):
-            migrated: dict[str, Any] = {}
-            for key, entry in raw["flows"].items():
-                if isinstance(entry, dict):
-                    entry.pop("pipe", None)  # drop legacy pipe field
-                # Use flow part of "pipe/flow" key, or key as-is
-                new_key = key.rsplit("/", 1)[-1] if "/" in key else key
-                migrated[new_key] = entry
-            raw["flows"] = migrated
-
         return cls.model_validate(raw)
 
     def to_yaml(self, path: Path) -> None:
@@ -346,15 +330,7 @@ def _find_doc_path(docs_dir: Path | None, flow: str) -> str | None:
     """Look for documentation for a flow in the docs directory."""
     if docs_dir is None or not docs_dir.exists():
         return None
-    # New convention: docs/flow-<flow>/
-    flow_doc = docs_dir / f"flow-{flow}"
+    flow_doc = docs_dir / flow
     if flow_doc.is_dir():
         return str(flow_doc)
-    # Legacy convention: docs/pipe-<flow>/flow-<flow>/ or docs/pipe-<flow>/
-    legacy_nested = docs_dir / f"pipe-{flow}" / f"flow-{flow}"
-    if legacy_nested.is_dir():
-        return str(legacy_nested)
-    legacy_flat = docs_dir / f"pipe-{flow}"
-    if legacy_flat.is_dir():
-        return str(legacy_flat)
     return None

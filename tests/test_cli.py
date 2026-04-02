@@ -52,25 +52,41 @@ def test_flow_list_with_flows(tmp_path, capsys):
     ret = main(["flow", "--root", str(tmp_path), "list"])
     assert ret == 0
     out = capsys.readouterr().out
-    assert "test/test" in out
+    assert "test" in out
 
 
 def test_flow_new(tmp_path, capsys):
-    ret = main(["flow", "--root", str(tmp_path), "new", "mypipe", "myflow"])
+    ret = main(["flow", "--root", str(tmp_path), "new", "myflow"])
     assert ret == 0
-    # Check flow scaffold was created
     flow_dir = tmp_path / "pipelines" / "myflow"
     assert flow_dir.is_dir()
     assert (flow_dir / "config.yml").exists()
     assert (flow_dir / "Snakefile").exists()
+    assert (flow_dir / "publish.yml").exists()
+    assert (flow_dir / "rules").is_dir()
+    assert (flow_dir / "notebooks" / "explore" / ".src").is_dir()
+    assert (flow_dir / "notebooks" / "demo" / ".src").is_dir()
+    # Config should have manifest keys
+    cfg = (flow_dir / "config.yml").read_text()
+    assert "output_manifest" in cfg
+    assert "input_manifest" in cfg
 
 
-def test_flow_new_duplicate(tmp_path, capsys):
-    main(["flow", "--root", str(tmp_path), "new", "mypipe", "myflow"])
+def test_flow_new_augments_existing(tmp_path, capsys):
+    """Running flow new on existing flow adds missing dirs without overwriting."""
+    main(["flow", "--root", str(tmp_path), "new", "myflow"])
     capsys.readouterr()
-    ret = main(["flow", "--root", str(tmp_path), "new", "mypipe", "myflow"])
-    assert ret == 1
-    assert "already exists" in capsys.readouterr().err
+    flow_dir = tmp_path / "pipelines" / "myflow"
+    # Remove a dir that should be re-created
+    import shutil
+    shutil.rmtree(flow_dir / "rules")
+    assert not (flow_dir / "rules").exists()
+    # Re-run — should augment, not fail
+    ret = main(["flow", "--root", str(tmp_path), "new", "myflow"])
+    assert ret == 0
+    assert (flow_dir / "rules").is_dir()
+    # Existing files should not be overwritten
+    assert (flow_dir / "Snakefile").exists()
 
 
 def test_registry_scan(tmp_path, capsys):

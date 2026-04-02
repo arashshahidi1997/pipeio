@@ -156,8 +156,7 @@ def test_scan_with_docs(tmp_path):
     (pipes_dir / "brainstate").mkdir(parents=True)
     (pipes_dir / "brainstate" / "Snakefile").touch()
 
-    # Legacy doc path format still works
-    (docs_dir / "pipe-brainstate" / "flow-brainstate").mkdir(parents=True)
+    (docs_dir / "brainstate").mkdir(parents=True)
 
     reg = PipelineRegistry.scan(pipes_dir, docs_dir=docs_dir)
     entry = reg.get("brainstate")

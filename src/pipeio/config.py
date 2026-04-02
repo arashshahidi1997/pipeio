@@ -33,9 +33,9 @@ class FlowConfig(BaseModel):
     """Schema for a flow's ``config.yml``."""
 
     input_dir: str = ""
-    input_registry: str = ""
+    input_manifest: str = ""
     output_dir: str = ""
-    output_registry: str = ""
+    output_manifest: str = ""
     registry: dict[str, RegistryGroup] = Field(default_factory=dict)
 
     # Pass-through for workflow-engine-specific fields (pybids_inputs, etc.)
@@ -48,9 +48,9 @@ class FlowConfig(BaseModel):
             raw = yaml.safe_load(fh) or {}
         known = {
             "input_dir",
-            "input_registry",
+            "input_manifest",
             "output_dir",
-            "output_registry",
+            "output_manifest",
             "registry",
         }
         extra = {k: v for k, v in raw.items() if k not in known}
@@ -59,17 +59,17 @@ class FlowConfig(BaseModel):
     def extra_inputs(self) -> dict[str, tuple[str, str]]:
         """Discover secondary input sources from extra config keys.
 
-        Returns a mapping of ``{name: (input_dir, input_registry)}`` for each
-        ``input_dir_<name>`` / ``input_registry_<name>`` pair found in extra.
+        Returns a mapping of ``{name: (input_dir, input_manifest)}`` for each
+        ``input_dir_<name>`` / ``input_manifest_<name>`` pair found in extra.
         """
         result: dict[str, tuple[str, str]] = {}
         for key, val in sorted(self.extra.items()):
             if not (isinstance(key, str) and key.startswith("input_dir_")):
                 continue
             suffix = key.removeprefix("input_dir_")
-            reg_key = f"input_registry_{suffix}"
-            if reg_key in self.extra:
-                result[suffix] = (str(val), str(self.extra[reg_key]))
+            manifest_key = f"input_manifest_{suffix}"
+            if manifest_key in self.extra:
+                result[suffix] = (str(val), str(self.extra[manifest_key]))
         return result
 
     def groups(self) -> list[str]:

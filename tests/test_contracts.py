@@ -169,7 +169,7 @@ def test_cli_contracts_validate_with_flow(tmp_path, capsys):
     assert ret == 0
     out = capsys.readouterr().out
     assert "[OK]" in out
-    assert "preproc/preproc" in out
+    assert "preproc" in out
 
 
 def test_cli_contracts_no_subcommand(tmp_path, capsys):

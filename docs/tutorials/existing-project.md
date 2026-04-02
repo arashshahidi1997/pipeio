@@ -1,6 +1,6 @@
 # Adopting pipeio in an existing project
 
-This tutorial shows how to add pipeio to a project that already has Snakemake pipelines. It covers installation, auto-discovery, MCP tool usage, and ongoing registry maintenance. The example uses a project with pipelines under `code/pipelines/`.
+This tutorial shows how to add pipeio to a project that already has Snakemake pipelines.
 
 ## Prerequisites
 
@@ -8,156 +8,150 @@ This tutorial shows how to add pipeio to a project that already has Snakemake pi
 - A project with Snakemake pipelines (Snakefiles and/or `.smk` files)
 - projio installed and configured (optional, for MCP integration)
 
-## 1. Install pipeio
+## 1. Install and initialize
 
 ```bash
 pip install pipeio
-```
-
-Or from a local checkout (development):
-
-```bash
-pip install -e /path/to/pipeio
-```
-
-## 2. Initialize the workspace
-
-```bash
 cd ~/projects/my-study
 pipeio init
 ```
 
 If `.projio/` exists (projio-managed project), pipeio scaffolds under `.projio/pipeio/`. Otherwise it creates `.pipeio/`.
 
-```
-.projio/pipeio/         # or .pipeio/
-  registry.yml          # pipeline registry (initially empty)
-```
+## 2. Auto-discover flows
 
-## 3. Auto-discover pipelines
-
-Pipeio scans for pipelines in two locations (checked in order):
-
-1. `code/pipelines/` — common in study-type projects
-2. `pipelines/` — common in tool-type projects
-
-Each top-level directory becomes a **pipe**. Subdirectories with a `Snakefile` or `config.yml` become **flows**. If a directory is itself both a pipe and a flow (has a Snakefile at root), it becomes a single-flow pipe.
+Pipeio scans `code/pipelines/` (or `pipelines/`) for directories with a Snakefile or `config.yml`.
 
 ```bash
 pipeio registry scan
 ```
 
-Example output for a neuroscience project:
+Example output:
 
 ```
 Scanned code/pipelines
-  pipe=brainstate     flow=brainstate     config=yes  mods=3
-  pipe=preprocess     flow=ecephys        config=yes  mods=2
-  pipe=preprocess     flow=ieeg           config=yes  mods=5
-  pipe=spectrogram    flow=spectrogram    config=yes  mods=4
-Written: .projio/pipeio/registry.yml (4 pipes, 4 flows)
+  brainstate         config=yes  mods=3
+  preprocess_ieeg    config=yes  mods=5
+  preprocess_ecephys config=yes  mods=2
+  spectrogram_burst  config=yes  mods=4
+Written: .projio/pipeio/registry.yml (4 flows)
 ```
 
 ### Mod auto-discovery
 
-Within each flow, pipeio parses the Snakefile for `rule` blocks and groups them by name prefix. For example, rules named `filter_raw`, `filter_notch`, `filter_bandpass` are grouped into a mod called `filter`. It also cross-references `docs/mod-<name>.md` for documentation paths.
+Within each flow, pipeio parses the Snakefile for `rule` blocks and groups them by name prefix. Rules `filter_raw`, `filter_notch` → mod `filter`.
 
-## 4. Inspect the registry
+## 3. Augment existing flows
 
-List discovered flows:
-
-```bash
-pipeio flow list
-```
-
-Check a specific flow's status (config, outputs, notebooks):
+Run `flow new` on existing flows to fill in any missing structure:
 
 ```bash
-pipeio flow list --pipe preprocess
+pipeio flow new preprocess_ieeg
 ```
 
-Validate registry consistency:
+This is **idempotent** — it adds missing directories (rules/, explore/, demo/, publish.yml) without touching existing files (Snakefile, config.yml).
+
+## 4. Migrate config keys
+
+If your configs use old-style keys, rename:
+
+| Old | New |
+|-----|-----|
+| `input_registry` | `input_manifest` |
+| `output_registry` | `output_manifest` |
+
+Manifest files should be named `manifest.yml` (not `*_registry.yml`).
+
+## 5. Migrate mod docs
+
+If you have `docs/mod-filter.md` files, migrate to faceted format:
+
+```
+docs/mod-filter.md  →  docs/filter/theory.md + docs/filter/spec.md
+```
+
+Move the old content into `theory.md`. Create `spec.md` stubs, then auto-generate:
+
+```python
+pipeio_mod_doc_refresh(flow="preprocess_ieeg", mod="filter", facet="spec", apply=True)
+```
+
+## 6. Migrate notebooks
+
+If notebooks are in flat `notebooks/.src/`, route to workspaces:
+
+- `investigate_*` and `explore_*` → `notebooks/explore/.src/`
+- `demo_*` and `validate_*` → `notebooks/demo/.src/`
+
+Update paths in `notebook.yml` accordingly.
+
+## 7. Sync code libraries
+
+If your project has compute libraries in `code/lib/` or project utils in `code/utils/`, register them:
 
 ```bash
-pipeio registry validate
+projio sync                   # auto-discover code/lib/*/ → codio (role=core)
+                              # auto-detect code/utils/ → code.project_utils config
 ```
 
-This checks that code paths exist, configs parse correctly, and doc references are valid.
+This enables tier-aware scaffolding: `nb_create`, `script_create`, and `mod_create` will auto-import your compute library and project utils in generated templates.
 
-## 5. Use via MCP (agent integration)
-
-If projio is installed and the MCP server is configured, all pipeio tools are available to AI agents. The MCP server exposes:
-
-| Tool | Description |
-|------|-------------|
-| `pipeio_flow_list` | List flows, optionally filtered by pipe |
-| `pipeio_flow_status` | Status of a specific flow (config, outputs, notebooks) |
-| `pipeio_nb_status` | Notebook sync/publish status across flows |
-| `pipeio_mod_list` | List mods within a flow |
-| `pipeio_mod_resolve` | Resolve modkeys to metadata and doc paths |
-| `pipeio_registry_scan` | Re-scan filesystem and rebuild registry |
-| `pipeio_registry_validate` | Validate registry consistency |
-| `pipeio_docs_collect` | Collect flow-local docs and notebooks into `docs/pipelines/` |
-| `pipeio_docs_nav` | Generate MkDocs nav YAML fragment for pipeline docs |
-| `pipeio_contracts_validate` | Validate I/O contracts (config, dirs, registry groups) |
-
-An agent can trigger auto-discovery via `pipeio_registry_scan` without needing CLI access. This is useful when pipelines are added or restructured.
-
-### Modkeys
-
-Mods are addressable via **modkeys** — structured identifiers of the form `pipe-<pipe>_flow-<flow>_mod-<mod>`. For example:
-
-```
-pipe-preprocess_flow-ieeg_mod-filter
-pipe-brainstate_flow-brainstate_mod-detect
-```
-
-Use `pipeio_mod_resolve` to look up metadata and documentation for a list of modkeys.
-
-## 6. Keep the registry current
-
-After adding or restructuring pipelines, re-scan:
+## 8. Validate
 
 ```bash
-pipeio registry scan
+pipeio registry validate      # registry consistency
+pipeio contracts validate     # I/O contracts
 ```
 
-Or via MCP: call `pipeio_registry_scan`.
+Via MCP:
 
-The registry is a generated artifact — treat it like a lockfile. Re-scan when the pipeline structure changes; don't hand-edit it.
+```python
+pipeio_mod_audit(flow="preprocess_ieeg")   # per-mod health check
+pipeio_nb_audit()                           # notebook lifecycle issues
+```
 
-## Project structure reference
+## 9. Use via MCP (agent integration)
 
-A typical study project after pipeio adoption:
+All pipeio tools are available to AI agents via the projio MCP server.
+Call `skill_read("pipeio-guide")` for the full tool reference and agentic workflows.
+
+Key tools for existing projects:
+
+| Intent | Tool |
+|--------|------|
+| Discover flows | `pipeio_flow_list()`, `pipeio_registry_scan()` |
+| Understand a mod | `pipeio_mod_context(flow, mod)` — rules, scripts, docs, config in one call |
+| Audit health | `pipeio_mod_audit(flow)` — contract drift, missing docs/scripts |
+| Refresh docs | `pipeio_mod_doc_refresh(flow, mod, "spec", apply=True)` |
+| Add a new mod | `pipeio_mod_create(flow, mod, inputs, outputs)` |
+
+## Project structure after adoption
 
 ```
 my-study/
-  .projio/
-    pipeio/
-      registry.yml              # auto-generated
-    config.yml                  # projio config
-  code/
-    pipelines/
-      preprocess/
-        ieeg/
-          Snakefile
-          config.yml
-          docs/
-            mod-filter.md
-            mod-rereference.md
-        ecephys/
-          Snakefile
-          config.yml
-      brainstate/
-        brainstate.smk
-        config.yml
-  workflow/
-    Snakefile                   # top-level orchestrator (imports from code/pipelines/)
+├── .projio/pipeio/
+│   └── registry.yml
+├── code/pipelines/
+│   ├── preprocess_ieeg/
+│   │   ├── Snakefile
+│   │   ├── config.yml           # input_manifest, output_manifest, registry
+│   │   ├── publish.yml          # dag, report, scripts
+│   │   ├── rules/
+│   │   ├── scripts/
+│   │   ├── docs/
+│   │   │   ├── index.md
+│   │   │   └── filter/          # per-mod faceted docs
+│   │   │       ├── theory.md
+│   │   │       └── spec.md
+│   │   └── notebooks/
+│   │       ├── notebook.yml
+│   │       ├── explore/.src/    # exploratory
+│   │       └── demo/.src/       # published demos
+│   └── brainstate/
+│       └── ...
+└── derivatives/
+    ├── preprocess_ieeg/
+    │   └── manifest.yml
+    └── brainstate/
+        └── manifest.yml
 ```
-
-## What's next
-
-- [Quickstart](quickstart.md) — creating flows from scratch
-- [How-to: Registry](../how-to/registry.md) — scan, validate, customize
-- [Explanation: Hierarchy](../explanation/hierarchy.md) — pipe / flow / mod design
-- [Explanation: Ecosystem Links](../explanation/ecosystem-links.md) — how pipeio connects to projio, codio, notio

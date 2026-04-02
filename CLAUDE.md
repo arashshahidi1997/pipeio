@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 make test              # run all tests (pytest, uses PYTHONPATH=src)
 PYTHONPATH=src python -m pytest tests/ -q                        # all tests
-PYTHONPATH=src python -m pytest tests/test_pipeio.py -q          # single test file
-PYTHONPATH=src python -m pytest tests/test_pipeio.py::test_import -q  # single test
+PYTHONPATH=src python -m pytest tests/test_mcp.py -q             # single test file
+PYTHONPATH=src python -m pytest tests/test_mcp.py::test_import -q  # single test
 make build             # build distribution
 make clean             # remove build artifacts
 ```
@@ -23,8 +23,6 @@ pipeio is an **agent-facing authoring and discovery layer** for computational pi
 
 ### Delegation Model
 
-pipeio delegates core pipeline concerns to specialized tools:
-
 | Concern | Delegated to | pipeio's role |
 |---------|-------------|---------------|
 | **Execution** | snakebids `run.py` → Snakemake | Registry/discovery, not launching |
@@ -36,73 +34,123 @@ pipeio delegates core pipeline concerns to specialized tools:
 
 - **Registry & discovery** — scan, query, validate the flow/mod hierarchy
 - **AI-safe authoring** — `rule_insert`, `config_patch`, `mod_create` with validation
-- **Contract semantics** — I/O validation, cross-flow wiring
-- **Notebook lifecycle** — pair, sync, execute, publish
-- **Documentation** — collect, nav generation, modkey bibliography
+- **Contract semantics** — I/O validation, cross-flow manifest wiring
+- **Notebook lifecycle** — pair, sync, execute, publish (explore/demo workspaces)
+- **Documentation** — collect (with publish.yml), nav generation, modkey bibliography
 
-### One Flow = One Derivative
+## Ontology
 
-Each flow is a self-contained snakebids app producing one derivative directory. The `pipe` field is a **category tag** (e.g. `preprocess`, `spectral`) — not a hierarchical container. Flows are the primary unit of organization.
+The canonical spec is `docs/specs/pipeio/ontology.md` in the parent projio repo. Key concepts:
 
-### Ecosystem Siblings
+### Flow
 
-| Tool | Purpose | Scaffolds | CLI entry |
-|------|---------|-----------|-----------|
-| **projio** | Project orchestration | `.projio/` | `projio init` |
-| **biblio** | Bibliography/papers | `bib/` | `biblio init` |
-| **indexio** | Semantic indexing/RAG | `infra/indexio/` | `indexio init-config` |
-| **codio** | Code reuse discovery | `.codio/` | `codio init` |
-| **notio** | Structured notes | `.notio/` | `notio init` |
-| **pipeio** | Pipeline authoring & discovery | `.pipeio/` | `pipeio init` |
+A **flow** is a self-contained snakebids app producing one derivative directory. Flow names are globally unique. Directory: `code/pipelines/{flow}/`.
 
-All tools share: src-layout, argparse CLI, YAML configs, Pydantic models, projio MCP integration.
+### Mod
 
-## Architecture
+A **mod** is a logical group of Snakemake rules within a flow, identified by rule name prefix. Each mod has:
+- Rules (in Snakefile or `rules/{mod}.smk`)
+- Scripts (`scripts/{script}.py`) — may be shared across rules
+- Documentation in three facets: `docs/{mod}/theory.md`, `spec.md`, `delta.md`
+- Notebooks (explore or demo workspace)
 
-### Flow / Mod Hierarchy
+### Mod Documentation Facets
 
-- **flow**: A self-contained snakebids app — owns a Snakefile, config.yml, output directory, and notebooks. Each flow produces one derivative directory.
-- **pipe**: A category tag grouping related flows (e.g. `preprocess`, `spectral`). Not a hierarchical container.
-- **mod**: A logical module within a flow — a group of related rules (identified by rule name prefix)
+Each mod has up to three doc facets in `{flow}/docs/{mod}/`:
 
-### Core Modules
+| Facet | File | Purpose |
+|-------|------|---------|
+| **Theory** | `theory.md` | Scientific rationale, method justification, pandoc citations |
+| **Spec** | `spec.md` | Technical specification: I/O contracts, parameters |
+| **Delta** | `delta.md` | Temporary: current state, known issues, refactor plans |
 
-- `config.py` — `FlowConfig`: load/validate per-flow `config.yml` with output registry schema
-- `registry.py` — `PipelineRegistry`: scan, load, validate, query the pipe/flow/mod hierarchy
-- `resolver.py` — `PathResolver` protocol + `PipelineContext` + `Session` for path resolution
-- `contracts.py` — Declarative input/output validation framework
-- `notebook/config.py` — `NotebookConfig`: load/validate `notebook.yml`
-- `adapters/bids.py` — snakebids adapter for `PathResolver` (requires `pipeio[bids]`)
-- `mcp.py` — MCP tool functions (called by projio's MCP server)
-- `cli.py` — argparse CLI entry point
+### Notebook Workspaces
 
-### PathResolver Protocol
+Notebooks live in two parallel workspaces within a flow:
 
-The key abstraction is `PathResolver` — a protocol that adapters implement to translate generic (group, member, entities) tuples into concrete filesystem paths:
+- **`notebooks/explore/`** — prototypes, investigations. Never published. Findings feed theory.md.
+- **`notebooks/demo/`** — showcases mod outputs. Published to site as HTML.
 
-```python
-class PathResolver(Protocol):
-    def resolve(self, group: str, member: str, **entities: str) -> Path: ...
-    def expand(self, group: str, member: str, **filters: str) -> list[Path]: ...
+Both use `.src/` + `.myst/` + `.ipynb` layout. Kind routing:
+- `investigate`, `explore` → `explore/` workspace
+- `demo`, `validate` → `demo/` workspace
+
+### Derivative Manifest
+
+Each flow's derivative directory contains `manifest.yml` — a copy of the flow's `registry:` config section. Downstream flows reference it via `input_manifest` in their config.
+
+```yaml
+# Cross-flow wiring in downstream config.yml
+input_dir: "derivatives/preprocess_ieeg"
+input_manifest: "derivatives/preprocess_ieeg/manifest.yml"
 ```
 
-`PipelineContext` and `Session` use this protocol, making the core workflow-engine-agnostic. The BIDS/snakebids adapter (`adapters/bids.py`) is one concrete implementation, gated behind `pipeio[bids]`.
+### publish.yml
 
-### CLI Surface
+Per-flow config controlling which artifacts `docs_collect` publishes to the site:
+
+```yaml
+dag: true          # publish dag.svg
+report: true       # publish report.html
+scripts: true      # generate script index with git links
+```
+
+## Flow Directory Structure
+
+```
+code/pipelines/{flow}/
+├── Snakefile
+├── config.yml                     # input_dir, output_dir, input_manifest, output_manifest, registry
+├── publish.yml                    # flow-level publish config
+├── rules/                         # optional per-mod rule files
+├── scripts/                       # rule scripts (may be shared)
+├── docs/                          # flow-local docs
+│   ├── index.md
+│   └── {mod}/                     # per-mod faceted docs
+│       ├── theory.md
+│       ├── spec.md
+│       └── delta.md               # optional, temporary
+└── notebooks/
+    ├── notebook.yml
+    ├── explore/                   # exploratory notebooks
+    │   ├── .src/
+    │   ├── .myst/
+    │   └── *.ipynb
+    └── demo/                      # demo notebooks (published)
+        ├── .src/
+        ├── .myst/
+        └── *.ipynb
+```
+
+## Registry Schema
+
+```yaml
+# .projio/pipeio/registry.yml
+flows:
+  preprocess_ieeg:
+    name: preprocess_ieeg
+    code_path: code/pipelines/preprocess_ieeg
+    config_path: code/pipelines/preprocess_ieeg/config.yml
+    mods:
+      filter:
+        name: filter
+        rules: [filter_bandpass, filter_notch]
+```
+
+## CLI Surface
 
 ```
 pipeio init                              — scaffold .pipeio/ in the current project
-pipeio flow list [--pipe PIPE]           — list all flows
-pipeio flow new <pipe> <flow>            — scaffold a new flow
+pipeio flow list [--prefix PREFIX]       — list all flows
+pipeio flow new <flow>                   — scaffold a new flow
 pipeio flow ids                          — print flow names (for shell completion)
 pipeio flow path <flow>                  — print absolute code_path
 pipeio flow config <flow>                — print absolute config_path
 pipeio flow deriv <flow>                 — print absolute derivative directory
 pipeio flow smk <flow> [smk_args]        — run snakemake in flow context
-pipeio flow status <flow>                — show flow status (config, outputs, mods)
-pipeio flow targets <flow> [-g/-m/-e/-x] — resolve output paths for registry entries
+pipeio flow status <flow>                — show flow status
+pipeio flow targets <flow> [-g/-m/-e/-x] — resolve output paths
 pipeio flow run <flow> [-c/-n/-f]        — launch snakemake in screen session
-pipeio flow log <flow> [--lines N]       — tail latest run log
 pipeio flow mods <flow>                  — list mods and rules
 pipeio nb pair|sync|exec|publish         — notebook lifecycle
 pipeio nb status                         — notebook sync/publish status
@@ -113,28 +161,15 @@ pipeio docs collect                      — collect flow docs → docs/pipeline
 pipeio docs nav                          — generate MkDocs nav fragment
 ```
 
-### `pf` Shell Helper
-
-The `pf` function (`bin/pf.sh`) provides quick flow navigation from the shell, similar to `wg` for projects. Source it in your shell profile.
-
-```bash
-pf                      # list all flows
-pf <flow>               # cd to flow's code directory
-pf <flow> smk [args]    # run snakemake in flow context
-pf <flow> deriv         # cd to derivative directory
-```
-
-Includes bash/zsh completion for flow names.
-
 ### MCP Tool Surface
 
 Tools exposed via projio's MCP server (43 tools across 10 categories):
 
 **Flow & registry (4):** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_registry_scan`, `pipeio_registry_validate`
 
-**Notebook lifecycle (13):** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_update`, `pipeio_nb_sync`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
+**Notebook lifecycle (14):** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_update`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
 
-**Mod management (4):** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_context`, `pipeio_mod_create` (with I/O wiring + PipelineContext support)
+**Mod management (4):** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_context`, `pipeio_mod_create`
 
 **Rule authoring (4):** `pipeio_rule_list`, `pipeio_rule_stub`, `pipeio_rule_insert`, `pipeio_rule_update`
 
@@ -142,7 +177,9 @@ Tools exposed via projio's MCP server (43 tools across 10 categories):
 
 **Path resolution (1):** `pipeio_target_paths`
 
-**Contracts & tracking (3):** `pipeio_contracts_validate`, `pipeio_cross_flow`, `pipeio_completion`
+**Contracts & audit (5):** `pipeio_contracts_validate`, `pipeio_cross_flow`, `pipeio_completion`, `pipeio_mod_audit`, `pipeio_mod_doc_refresh`
+
+**Scaffolding (2):** `pipeio_script_create`, `pipeio_nb_promote`
 
 **DAG & reporting (2):** `pipeio_dag_export`, `pipeio_report`
 
@@ -150,7 +187,7 @@ Tools exposed via projio's MCP server (43 tools across 10 categories):
 
 **Documentation (4):** `pipeio_docs_collect`, `pipeio_docs_nav`, `pipeio_mkdocs_nav_patch`, `pipeio_modkey_bib`
 
-**Execution (4)** *(deprecated — to be replaced by datalad run)*: `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`
+**Execution (4):** `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`
 
 ## Source Layout
 
@@ -159,26 +196,32 @@ src/pipeio/
 ├── __init__.py          # public API exports
 ├── cli.py               # argparse CLI (pipeio command)
 ├── config.py            # FlowConfig (Pydantic model for config.yml)
-├── registry.py          # PipelineRegistry (pipe/flow/mod hierarchy)
+├── registry.py          # PipelineRegistry (flow/mod hierarchy)
 ├── resolver.py          # PathResolver protocol, PipelineContext, Session
 ├── contracts.py         # Declarative I/O validation framework
+├── docs.py              # docs_collect, docs_nav, PublishConfig
 ├── mcp.py               # MCP tool functions (called by projio MCP server)
 ├── notebook/
 │   ├── __init__.py
-│   └── config.py        # NotebookConfig (Pydantic model for notebook.yml)
+│   ├── config.py        # NotebookConfig (notebook.yml model)
+│   ├── lifecycle.py     # pair, sync, status, lab, publish
+│   └── analyze.py       # Static notebook analysis
 ├── scaffold/
-│   └── __init__.py      # Flow/mod scaffolding from templates
+│   └── __init__.py      # Flow/mod scaffolding
 ├── adapters/
-│   ├── __init__.py
 │   └── bids.py          # snakebids PathResolver adapter (optional)
-└── templates/           # Jinja2/YAML templates for scaffold
+└── templates/           # Jinja2/YAML templates
 ```
 
-## Optional Dependencies
+## Key Conventions (No Backward Compat)
 
-- `pipeio[bids]` — snakebids adapter for BIDS-compliant path resolution
-- `pipeio[notebook]` — jupytext + nbconvert for notebook lifecycle
+- **No `pipe` parameter anywhere** — flows are addressed directly by name
+- **`input_manifest` / `output_manifest`** — not `input_registry` / `output_registry`
+- **Mod docs are faceted** — `docs/{mod}/theory.md` + `spec.md`, not single `mod-{mod}.md`
+- **Notebooks use workspace dirs** — `explore/.src/` and `demo/.src/`, not flat `notebooks/.src/`
+- **Modkey format** — `{flow}_mod-{mod}`, not `pipe-X_flow-Y_mod-Z`
+- **Published docs path** — `docs/pipelines/{flow}/`, not `docs/pipelines/{pipe}/{flow}/`
 
 ## Project Context
 
-This is part of the projio ecosystem. Specs live in the parent projio repo at `docs/specs/pipeio/`. The reference implementation was extracted from the pixecog project's pipeline infrastructure.
+This is part of the projio ecosystem. The ontology spec lives at `docs/specs/pipeio/ontology.md` in the parent projio repo. The reference implementation was extracted from the pixecog project's pipeline infrastructure.

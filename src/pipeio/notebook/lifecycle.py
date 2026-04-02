@@ -405,14 +405,21 @@ def _nb_output_paths(py_path: Path) -> tuple[Path, Path]:
     """Compute ipynb and myst output paths from a .py source path.
 
     Layout-aware: if ``.py`` is in a ``.src/`` directory, ``.ipynb`` goes
-    to the parent ``notebooks/`` dir and ``.md`` goes to ``.myst/``.
+    to the parent workspace dir and ``.md`` goes to ``.myst/``.
+
+    Supports both flat and workspace layouts::
+
+        notebooks/.src/foo.py        → notebooks/foo.ipynb, notebooks/.myst/foo.md
+        notebooks/explore/.src/foo.py → notebooks/explore/foo.ipynb, notebooks/explore/.myst/foo.md
+        notebooks/demo/.src/foo.py   → notebooks/demo/foo.ipynb, notebooks/demo/.myst/foo.md
+
     Otherwise, outputs are siblings of the ``.py`` file.
     """
     name = py_path.stem
     if py_path.parent.name == ".src":
-        nb_dir = py_path.parent.parent  # notebooks/
-        ipynb_path = nb_dir / f"{name}.ipynb"
-        myst_dir = nb_dir / ".myst"
+        workspace_dir = py_path.parent.parent  # notebooks/ or notebooks/explore/
+        ipynb_path = workspace_dir / f"{name}.ipynb"
+        myst_dir = workspace_dir / ".myst"
         myst_path = myst_dir / f"{name}.md"
     else:
         ipynb_path = py_path.with_suffix(".ipynb")
@@ -933,8 +940,14 @@ def nb_lab(
             if not ipynb_path.exists():
                 continue
 
-            # Create symlink: lab_dir/<flow>/<name>.ipynb
-            link_dir = lab_dir / entry_flow
+            # Create symlink: lab_dir/<flow>[/<workspace>]/<name>.ipynb
+            kind = getattr(entry, "kind", "") or ""
+            if kind in ("investigate", "explore"):
+                link_dir = lab_dir / entry_flow / "explore"
+            elif kind in ("demo", "validate"):
+                link_dir = lab_dir / entry_flow / "demo"
+            else:
+                link_dir = lab_dir / entry_flow
             link_dir.mkdir(parents=True, exist_ok=True)
             link_path = link_dir / ipynb_path.name
 
