@@ -113,8 +113,9 @@ def docs_collect(root: Path) -> list[str]:
                     dst = target / "mods" / rel
                 else:
                     dst = target / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_file, dst)
+                if _is_stale(src_file, dst):
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dst)
                 collected.append(str(dst))
 
         # --- 2. Publish notebooks ---
@@ -144,14 +145,16 @@ def docs_collect(root: Path) -> list[str]:
                         if ipynb_path.exists():
                             nb_target.mkdir(parents=True, exist_ok=True)
                             out = nb_target / f"{name}.html"
-                            _nbconvert_html(ipynb_path, out)
+                            if _is_stale(ipynb_path, out):
+                                _nbconvert_html(ipynb_path, out)
                             collected.append(str(out))
 
                     if nb_entry.publish_myst and fmt == "myst":
                         if myst_path.exists():
                             nb_target.mkdir(parents=True, exist_ok=True)
                             out = nb_target / f"{name}.md"
-                            shutil.copy2(myst_path, out)
+                            if _is_stale(myst_path, out):
+                                shutil.copy2(myst_path, out)
                             collected.append(str(out))
             except Exception:
                 pass
@@ -168,18 +171,20 @@ def docs_collect(root: Path) -> list[str]:
             if pub_cfg.dag:
                 dag_src = flow_dir / "dag.svg"
                 if dag_src.exists():
-                    target.mkdir(parents=True, exist_ok=True)
                     dst = target / "dag.svg"
-                    shutil.copy2(dag_src, dst)
+                    if _is_stale(dag_src, dst):
+                        target.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(dag_src, dst)
                     collected.append(str(dst))
 
             # Report: copy latest report.html
             if pub_cfg.report:
                 report_src = flow_dir / "report.html"
                 if report_src.exists():
-                    target.mkdir(parents=True, exist_ok=True)
                     dst = target / "report.html"
-                    shutil.copy2(report_src, dst)
+                    if _is_stale(report_src, dst):
+                        target.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(report_src, dst)
                     collected.append(str(dst))
 
             # Scripts: generate script index with git links
@@ -231,6 +236,13 @@ def docs_collect(root: Path) -> list[str]:
             collected.append(str(sub_mkdocs))
 
     return collected
+
+
+def _is_stale(src: Path, dst: Path) -> bool:
+    """Return True if *dst* is missing or older than *src*."""
+    if not dst.exists():
+        return True
+    return src.stat().st_mtime > dst.stat().st_mtime
 
 
 def _generate_dag_svg(
