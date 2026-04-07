@@ -117,6 +117,18 @@ List mods for a flow with their rules.
 pipeio flow mods <flow>
 ```
 
+### `pipeio flow dag`
+
+Generate a DAG SVG for a flow and write it to `docs/pipelines/<flow>/dag.svg`.
+
+```bash
+pipeio flow dag <flow>                   # rulegraph SVG (default)
+pipeio flow dag <flow> --format dot      # raw DOT to stdout (for piping)
+pipeio flow dag <flow> --full            # full job DAG instead of rulegraph
+```
+
+Requires snakemake and graphviz (`dot`).
+
 ### `pipeio flow smk`
 
 Run snakemake directly in a flow's context (resolves `--snakefile` and `--directory`).
@@ -195,6 +207,7 @@ source /path/to/pipeio/bin/pf.sh
 | `pf <flow> run [opts]` | launch snakemake in screen session |
 | `pf <flow> log [-n N]` | tail latest run log |
 | `pf <flow> mods` | list mods and their rules |
+| `pf <flow> dag` | generate DAG SVG to docs |
 
 Tab completion is provided for both bash and zsh.
 

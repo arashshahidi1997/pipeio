@@ -44,6 +44,7 @@ pipeio flow targets <flow> [-g GRP] [-m MEM] [-e k=v] [-x]  # resolve output pat
 pipeio flow run <flow> [targets] [-c N] [-n] [-f k=v]  # launch via screen + wildcards
 pipeio flow log <flow> [-n LINES]                       # tail latest run log
 pipeio flow mods <flow>                                 # list mods and their rules
+pipeio flow dag <flow> [--format svg|dot] [--full]      # generate DAG SVG to docs
 pipeio flow smk <flow> [snakemake args...]              # run snakemake in flow context
 pipeio flow ids                                         # print flow names (completion)
 ```

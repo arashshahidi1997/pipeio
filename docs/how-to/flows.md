@@ -62,10 +62,21 @@ pipeio flow log ieeg -n 100      # last 100 lines
 pipeio flow mods ieeg
 ```
 
+## Generate DAG
+
+```bash
+pipeio flow dag ieeg                   # SVG → docs/pipelines/ieeg/dag.svg
+pipeio flow dag ieeg --format dot      # DOT to stdout (for piping)
+pipeio flow dag ieeg --full            # full job DAG instead of rulegraph
+```
+
+DAGs are also auto-generated during `pipeio docs collect`.
+
+Via MCP: `pipeio_dag_export(flow="ieeg", output_format="svg")` writes the SVG to the same location.
+
 ## Run snakemake directly
 
 ```bash
-pipeio flow smk ieeg --rulegraph | dot -Tsvg > dag.svg
 pipeio flow smk ieeg -n --reason
 ```
 
