@@ -1117,12 +1117,25 @@ def mcp_docs_collect(root: Path) -> dict[str, Any]:
     }
 
 
-def mcp_docs_nav(root: Path) -> dict[str, Any]:
-    """Generate MkDocs nav YAML fragment for docs/pipelines/."""
+def mcp_docs_nav(root: Path, *, write: bool = True) -> dict[str, Any]:
+    """Generate MkDocs nav for docs/pipelines/ and write monorepo sub-mkdocs.yml.
+
+    When ``write=True`` (default), writes ``docs/pipelines/mkdocs.yml`` for the
+    mkdocs-monorepo-plugin.  The root ``mkdocs.yml`` includes it via::
+
+        - Pipelines: '!include ./docs/pipelines/mkdocs.yml'
+
+    This is set up automatically by ``projio sync``.
+    """
     from pipeio.docs import docs_nav
 
-    fragment = docs_nav(root)
-    return {"nav_fragment": fragment}
+    fragment = docs_nav(root, write=write)
+    sub_mkdocs = root / "docs" / "pipelines" / "mkdocs.yml"
+    return {
+        "nav_fragment": fragment,
+        "sub_mkdocs": str(sub_mkdocs.relative_to(root)) if sub_mkdocs.exists() else None,
+        "written": write and sub_mkdocs.exists(),
+    }
 
 
 def mcp_contracts_validate(root: Path) -> dict[str, Any]:

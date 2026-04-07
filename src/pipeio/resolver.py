@@ -30,14 +30,15 @@ class PathResolver(Protocol):
 
 
 class SimpleResolver:
-    """Non-BIDS path resolver using simple string template expansion.
+    """BIDS-compliant path resolver using registry group metadata.
 
     Constructs paths as::
 
-        {root}/{group_root}/{entity_dirs}/{suffix}{extension}
+        {output_dir}/sub-{subject}/ses-{session}/{group_root}/{datatype}/
+          sub-{subject}_ses-{session}_task-{task}_..._suffix.extension
 
-    where ``group_root`` comes from ``bids.root`` in the registry group,
-    and ``entity_dirs`` are constructed from entity key-value pairs.
+    where ``group_root`` and ``datatype`` come from the ``bids`` dict in the
+    registry group definition.
     """
 
     def __init__(self, config: FlowConfig, root: Path) -> None:
@@ -45,7 +46,7 @@ class SimpleResolver:
         self._root = root
 
     def resolve(self, group: str, member: str, **entities: str) -> Path:
-        """Resolve a single path from the registry group and member."""
+        """Resolve a single BIDS-compliant path from the registry group and member."""
         grp = self._config.registry.get(group)
         if grp is None:
             raise KeyError(f"Unknown group: {group!r}")
@@ -55,23 +56,31 @@ class SimpleResolver:
             raise KeyError(f"Unknown member: {member!r} in group {group!r}. Known: {known}")
 
         group_root = grp.bids.get("root", group)
+        datatype = grp.bids.get("datatype", "")
         output_dir = self._config.output_dir
 
-        # Build entity directory segments (e.g. sub-01/ses-pre)
-        entity_parts = [f"{k}-{v}" for k, v in sorted(entities.items())]
-        entity_path = "/".join(entity_parts) if entity_parts else ""
+        # Build BIDS directory: output_dir/sub-XX/ses-XX/group_root/datatype/
+        dir_parts: list[str] = [output_dir]
+        if "subject" in entities:
+            dir_parts.append(f"sub-{entities['subject']}")
+        if "session" in entities:
+            dir_parts.append(f"ses-{entities['session']}")
+        dir_parts.append(group_root)
+        if datatype:
+            dir_parts.append(datatype)
 
-        # Build filename from entities + suffix + extension
-        entity_prefix = "_".join(entity_parts)
-        suffix_part = f"_suffix-{mem.suffix}" if mem.suffix else ""
-        filename = f"{entity_prefix}{suffix_part}{mem.extension}" if entity_prefix else f"suffix-{mem.suffix}{mem.extension}"
+        # Build BIDS filename: sub-XX_ses-XX_task-XX_..._suffix.extension
+        name_parts: list[str] = []
+        for key in _BIDS_ENTITY_ORDER:
+            if key in entities:
+                abbrev = _BIDS_ABBREV.get(key, key)
+                name_parts.append(f"{abbrev}-{entities[key]}")
+        if mem.suffix:
+            name_parts.append(mem.suffix)
+        filename = "_".join(name_parts) + mem.extension if name_parts else f"{mem.suffix}{mem.extension}"
 
-        parts = [output_dir, group_root]
-        if entity_path:
-            parts.append(entity_path)
-        parts.append(filename)
-
-        return self._root / "/".join(parts)
+        dir_parts.append(filename)
+        return self._root / "/".join(dir_parts)
 
     def expand(self, group: str, member: str, **filters: str) -> list[Path]:
         """Enumerate matching paths by globbing the filesystem."""
@@ -90,7 +99,7 @@ class SimpleResolver:
             return []
 
         # Glob for files matching the suffix+extension pattern
-        pattern = f"**/*suffix-{mem.suffix}{mem.extension}"
+        pattern = f"**/*{mem.suffix}{mem.extension}"
         matches = sorted(base.glob(pattern))
 
         # Apply entity filters
@@ -98,7 +107,7 @@ class SimpleResolver:
             filtered = []
             for p in matches:
                 path_str = str(p)
-                if all(f"{k}-{v}" in path_str for k, v in filters.items()):
+                if all(f"{_BIDS_ABBREV.get(k, k)}-{v}" in path_str for k, v in filters.items()):
                     filtered.append(p)
             matches = filtered
 
@@ -109,8 +118,18 @@ def _resolve_stage(ctx: PipelineContext, sess: Session, prefer: Sequence[str]) -
     """Return the first stage name in *prefer* whose files exist on disk."""
     for candidate in prefer:
         try:
-            if ctx.stage(candidate).have(sess):
-                return candidate
+            stage = ctx.stage(candidate)
+            if isinstance(stage, InputStage):
+                # For input stages, check each member individually —
+                # at least one must exist (not all pybids_inputs may apply).
+                if any(
+                    stage._resolve_path(sess, m).exists()
+                    for m in stage.members()
+                ):
+                    return candidate
+            else:
+                if stage.have(sess):
+                    return candidate
         except KeyError:
             continue
     raise FileNotFoundError(
@@ -375,7 +394,7 @@ class PipelineContext:
         group_root = grp.bids.get("root", group)
         return (
             f"{self.config.output_dir}/{group_root}/"
-            f"{{entities}}/suffix-{mem.suffix}{mem.extension}"
+            f"{{entities}}/{mem.suffix}{mem.extension}"
         )
 
     def path(self, group: str, member: str, **entities: str) -> Path:

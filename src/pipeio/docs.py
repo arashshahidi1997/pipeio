@@ -186,16 +186,14 @@ def docs_collect(root: Path) -> list[str]:
     return collected
 
 
-def docs_nav(root: Path) -> str:
-    """Generate a MkDocs nav YAML fragment for ``docs/pipelines/``.
+def docs_nav(root: Path, *, write: bool = True) -> str:
+    """Generate nav for ``docs/pipelines/`` and optionally write the monorepo sub-mkdocs.yml.
 
-    Returns a YAML string suitable for pasting into ``mkdocs.yml``::
+    When ``write=True`` (default), writes ``docs/pipelines/mkdocs.yml`` — a
+    standalone MkDocs config consumed by the ``mkdocs-monorepo-plugin`` via
+    ``!include ./docs/pipelines/mkdocs.yml`` in the root ``mkdocs.yml``.
 
-        - Pipelines:
-          - denoise:
-            - Overview: pipelines/denoise/index.md
-            - Notebooks:
-              - Analysis: pipelines/denoise/notebooks/analysis.html
+    Always returns the generated YAML string (the nav fragment for legacy use).
     """
     docs_root = root / "docs"
     docs_base = docs_root / "pipelines"
@@ -204,44 +202,66 @@ def docs_nav(root: Path) -> str:
 
     flow_navs: list[dict[str, Any]] = []
 
-    for flow_dir in sorted(d for d in docs_base.iterdir() if d.is_dir()):
-        flow_entries: list[dict[str, Any]] = []
+    for pipe_dir in sorted(d for d in docs_base.iterdir() if d.is_dir()):
+        for flow_dir in sorted(d for d in pipe_dir.iterdir() if d.is_dir()):
+            flow_entries: list[dict[str, Any]] = []
 
-        # index.md first
-        idx = flow_dir / "index.md"
-        if idx.exists():
-            flow_entries.append(
-                {"Overview": str(idx.relative_to(docs_root))}
-            )
+            # index.md first
+            idx = flow_dir / "index.md"
+            if idx.exists():
+                flow_entries.append(
+                    {"Overview": str(idx.relative_to(docs_base))}
+                )
 
-        # other .md files (excluding index)
-        for md in sorted(flow_dir.glob("*.md")):
-            if md.name == "index.md":
-                continue
-            title = md.stem.replace("-", " ").replace("_", " ").title()
-            flow_entries.append(
-                {title: str(md.relative_to(docs_root))}
-            )
+            # other .md files (excluding index)
+            for md in sorted(flow_dir.glob("*.md")):
+                if md.name == "index.md":
+                    continue
+                title = md.stem.replace("-", " ").replace("_", " ").title()
+                flow_entries.append(
+                    {title: str(md.relative_to(docs_base))}
+                )
 
-        # notebooks subdirectory
-        nb_dir = flow_dir / "notebooks"
-        if nb_dir.is_dir():
-            nb_entries: list[dict[str, str]] = []
-            for f in sorted(nb_dir.iterdir()):
-                if f.suffix in (".html", ".md") and f.is_file():
-                    title = f.stem.replace("-", " ").replace("_", " ").title()
-                    nb_entries.append(
-                        {title: str(f.relative_to(docs_root))}
-                    )
-            if nb_entries:
-                flow_entries.append({"Notebooks": nb_entries})
+            # DAG SVG
+            dag = flow_dir / "dag.svg"
+            if dag.exists():
+                flow_entries.append(
+                    {"DAG": str(dag.relative_to(docs_base))}
+                )
 
-        if flow_entries:
-            flow_navs.append({flow_dir.name: flow_entries})
+            # notebooks subdirectory
+            nb_dir = flow_dir / "notebooks"
+            if nb_dir.is_dir():
+                nb_entries: list[dict[str, str]] = []
+                for f in sorted(nb_dir.iterdir()):
+                    if f.suffix in (".html", ".md") and f.is_file():
+                        title = f.stem.replace("-", " ").replace("_", " ").title()
+                        nb_entries.append(
+                            {title: str(f.relative_to(docs_base))}
+                        )
+                if nb_entries:
+                    flow_entries.append({"Notebooks": nb_entries})
+
+            if flow_entries:
+                label = f"{pipe_dir.name}/{flow_dir.name}"
+                flow_navs.append({label: flow_entries})
 
     if not flow_navs:
         return "# docs/pipelines/ exists but contains no docs.\n"
 
+    # Build the sub-mkdocs.yml for monorepo plugin
+    sub_config = {
+        "site_name": "pipelines",
+        "docs_dir": ".",
+        "nav": flow_navs,
+    }
+    sub_yaml = yaml.dump(sub_config, sort_keys=False, default_flow_style=False)
+
+    if write:
+        sub_mkdocs = docs_base / "mkdocs.yml"
+        sub_mkdocs.write_text(sub_yaml, encoding="utf-8")
+
+    # Also return the legacy fragment format
     fragment = [{"Pipelines": flow_navs}]
     return yaml.dump(fragment, sort_keys=False, default_flow_style=False)
 
