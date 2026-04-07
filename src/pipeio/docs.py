@@ -42,13 +42,8 @@ class PublishConfig(BaseModel):
 
 def _find_registry(root: Path) -> Path | None:
     """Locate the pipeline registry, checking .projio/pipeio/ first."""
-    for candidate in (
-        root / ".projio" / "pipeio" / "registry.yml",
-        root / ".pipeio" / "registry.yml",
-    ):
-        if candidate.exists():
-            return candidate
-    return None
+    from pipeio.registry import find_registry
+    return find_registry(root)
 
 
 def docs_collect(root: Path) -> list[str]:

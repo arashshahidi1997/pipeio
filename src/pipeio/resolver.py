@@ -105,6 +105,39 @@ class SimpleResolver:
         return matches
 
 
+def _resolve_stage(ctx: PipelineContext, sess: Session, prefer: Sequence[str]) -> str:
+    """Return the first stage name in *prefer* whose files exist on disk."""
+    for candidate in prefer:
+        try:
+            if ctx.stage(candidate).have(sess):
+                return candidate
+        except KeyError:
+            continue
+    raise FileNotFoundError(
+        f"No preferred stages exist on disk for session "
+        f"{sess.entities}. Tried: {', '.join(map(repr, prefer))}"
+    )
+
+
+# BIDS entity key → filename prefix abbreviation
+_BIDS_ABBREV: dict[str, str] = {
+    "subject": "sub",
+    "session": "ses",
+    "task": "task",
+    "acquisition": "acq",
+    "recording": "rec",
+    "run": "run",
+    "space": "space",
+    "description": "desc",
+}
+
+# Canonical ordering of BIDS entity keys in filenames
+_BIDS_ENTITY_ORDER: tuple[str, ...] = (
+    "subject", "session", "task", "acquisition",
+    "recording", "run", "space", "description",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Stage:
     """Handle to a single output-registry group (stage).
@@ -153,16 +186,89 @@ class Stage:
         prefer: Sequence[str],
     ) -> str:
         """Return the first stage name in *prefer* whose files exist on disk."""
-        for candidate in prefer:
-            try:
-                if self.ctx.stage(candidate).have(sess):
-                    return candidate
-            except KeyError:
-                continue
-        raise FileNotFoundError(
-            f"No preferred stages exist on disk for session "
-            f"{sess.entities}. Tried: {', '.join(map(repr, prefer))}"
-        )
+        return _resolve_stage(self.ctx, sess, prefer)
+
+
+@dataclass(frozen=True, slots=True)
+class InputStage:
+    """Handle to a virtual input stage derived from ``pybids_inputs``.
+
+    Members correspond to ``pybids_inputs`` keys and paths are constructed
+    using BIDS conventions under the flow's ``input_dir``.
+    """
+
+    ctx: PipelineContext
+    name: str
+    _pybids_inputs: dict[str, Any] = field(repr=False)
+
+    def members(self) -> list[str]:
+        """Return sorted member (pybids_inputs key) names."""
+        return sorted(self._pybids_inputs.keys())
+
+    def _resolve_path(self, sess: Session, member: str) -> Path:
+        """Construct a BIDS-style input path for *member*."""
+        spec = self._pybids_inputs[member]
+        filters = spec.get("filters", {})
+        entities = sess.entities
+        suffix = filters.get("suffix", member)
+        extension = filters.get("extension", "")
+        datatype = filters.get("datatype", "")
+
+        # Directory: {input_dir}/sub-{subject}/ses-{session}/{datatype}/
+        parts: list[str] = [self.ctx.config.input_dir]
+        if "subject" in entities:
+            parts.append(f"sub-{entities['subject']}")
+        if "session" in entities:
+            parts.append(f"ses-{entities['session']}")
+        if datatype:
+            parts.append(datatype)
+
+        # Filename: sub-XX_ses-XX_task-XX_..._suffix.ext
+        name_parts: list[str] = []
+        for key in _BIDS_ENTITY_ORDER:
+            if key in entities:
+                abbrev = _BIDS_ABBREV.get(key, key)
+                name_parts.append(f"{abbrev}-{entities[key]}")
+        name_parts.append(suffix)
+        filename = "_".join(name_parts) + extension
+
+        parts.append(filename)
+        return self.ctx.root / "/".join(parts)
+
+    def paths(
+        self,
+        sess: Session,
+        *,
+        members: Sequence[str] | None = None,
+    ) -> dict[str, Path]:
+        """Return ``{member: Path}`` for input files."""
+        all_members = self.members()
+        requested = list(members) if members is not None else all_members
+        missing = [m for m in requested if m not in all_members]
+        if missing:
+            raise KeyError(
+                f"Input stage {self.name!r} has no member(s): "
+                f"{', '.join(map(repr, missing))}. "
+                f"Known members: {', '.join(map(repr, all_members))}"
+            )
+        return {m: self._resolve_path(sess, m) for m in requested}
+
+    def have(
+        self,
+        sess: Session,
+        *,
+        members: Sequence[str] | None = None,
+    ) -> bool:
+        """Return ``True`` if every requested member exists on disk."""
+        return all(p.exists() for p in self.paths(sess, members=members).values())
+
+    def resolve(
+        self,
+        sess: Session,
+        prefer: Sequence[str],
+    ) -> str:
+        """Return the first stage name in *prefer* whose files exist on disk."""
+        return _resolve_stage(self.ctx, sess, prefer)
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,13 +321,13 @@ class PipelineContext:
         registry: Any | None = None,
     ) -> PipelineContext:
         """Create a PipelineContext by looking up a flow in the pipeline registry."""
-        from pipeio.registry import PipelineRegistry
+        from pipeio.registry import PipelineRegistry, find_registry
 
         if registry is None:
-            reg_path = root / ".pipeio" / "registry.yml"
-            if not reg_path.exists():
+            reg_path = find_registry(root)
+            if reg_path is None:
                 raise FileNotFoundError(
-                    f"No pipeline registry at {reg_path}. Run 'pipeio init'."
+                    f"No pipeline registry found under {root}. Run 'pipeio init'."
                 )
             registry = PipelineRegistry.from_yaml(reg_path)
 
@@ -289,19 +395,46 @@ class PipelineContext:
         """Enumerate all matching paths with optional filters."""
         return self.resolver.expand(group, member, **filters)
 
-    def stage(self, name: str) -> Stage:
-        """Return a Stage handle for an output-registry group.
+    def input_stages(self) -> list[str]:
+        """Return virtual input stage names derived from ``input_dir``.
 
-        *name* may be a literal registry group key or a config-driven alias
-        defined under ``stage_aliases`` in the extra config.
+        If the config has ``pybids_inputs`` in its extra fields and a
+        non-empty ``input_dir``, the ``input_dir`` value is exposed as a
+        stage name whose members are the ``pybids_inputs`` keys.
+        """
+        pybids = self.config.extra.get("pybids_inputs")
+        if pybids and self.config.input_dir:
+            return [self.config.input_dir]
+        return []
+
+    def stage(self, name: str) -> Stage | InputStage:
+        """Return a Stage handle for an output-registry group or input stage.
+
+        Resolution order:
+
+        1. Expand ``stage_aliases`` from extra config.
+        2. Check output registry groups → returns :class:`Stage`.
+        3. Check input stages (``input_dir`` with ``pybids_inputs``) →
+           returns :class:`InputStage`.
+
+        Raises :class:`KeyError` if the name is not found in any tier.
         """
         aliases = self.config.extra.get("stage_aliases") or {}
         resolved = aliases.get(name, name)
+
+        # Output registry groups
         groups = self.groups()
-        if resolved not in groups:
-            tag = f" (alias for {resolved!r})" if resolved != name else ""
-            raise KeyError(
-                f"Unknown stage: {name!r}{tag}. "
-                f"Known groups: {', '.join(map(repr, groups))}"
-            )
-        return Stage(ctx=self, name=resolved)
+        if resolved in groups:
+            return Stage(ctx=self, name=resolved)
+
+        # Input stages (virtual, from pybids_inputs + input_dir)
+        pybids = self.config.extra.get("pybids_inputs")
+        if pybids and resolved == self.config.input_dir:
+            return InputStage(ctx=self, name=resolved, _pybids_inputs=pybids)
+
+        tag = f" (alias for {resolved!r})" if resolved != name else ""
+        known = list(map(repr, groups)) + list(map(repr, self.input_stages()))
+        raise KeyError(
+            f"Unknown stage: {name!r}{tag}. "
+            f"Known stages: {', '.join(known)}"
+        )

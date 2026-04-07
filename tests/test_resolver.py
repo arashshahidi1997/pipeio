@@ -1,4 +1,4 @@
-"""Tests for pipeio.resolver — SimpleResolver, PipelineContext, Session, Stage."""
+"""Tests for pipeio.resolver — SimpleResolver, PipelineContext, Session, Stage, InputStage."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from pipeio.config import FlowConfig, RegistryGroup, RegistryMember
-from pipeio.resolver import PipelineContext, Session, SimpleResolver, Stage
+from pipeio.resolver import InputStage, PipelineContext, Session, SimpleResolver, Stage
 
 
 def _sample_flow_config() -> FlowConfig:
@@ -285,3 +285,188 @@ class TestStage:
         sess = ctx.session(subject="01")
         with pytest.raises(FileNotFoundError):
             stage.resolve(sess, prefer=["badlabel", "raw_zarr"])
+
+
+# ---- InputStage ----
+
+
+def _sample_flow_config_with_inputs() -> FlowConfig:
+    """FlowConfig with pybids_inputs for input stage testing."""
+    return FlowConfig(
+        input_dir="raw",
+        output_dir="derivatives/preprocess",
+        registry={
+            "interpolate": RegistryGroup(
+                base_input="ieeg",
+                bids={"root": "interpolate", "datatype": "ieeg"},
+                members={"lfp": RegistryMember(suffix="ieeg", extension=".lfp")},
+            ),
+        },
+        extra={
+            "pybids_inputs": {
+                "ieeg": {
+                    "filters": {
+                        "suffix": "ieeg",
+                        "extension": ".lfp",
+                        "datatype": "ieeg",
+                    },
+                    "wildcards": ["subject", "session", "task"],
+                },
+                "ecephys": {
+                    "filters": {
+                        "suffix": "ecephys",
+                        "extension": ".lfp",
+                        "recording": "lf",
+                    },
+                    "wildcards": ["subject", "session", "task", "acquisition", "recording"],
+                },
+            },
+        },
+    )
+
+
+class TestInputStage:
+    def test_stage_returns_input_stage(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        assert isinstance(stg, InputStage)
+        assert stg.name == "raw"
+
+    def test_input_stages_list(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        assert ctx.input_stages() == ["raw"]
+
+    def test_input_stages_empty_without_pybids(self, tmp_path):
+        cfg = _sample_flow_config()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        assert ctx.input_stages() == []
+
+    def test_members(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        assert stg.members() == ["ecephys", "ieeg"]
+
+    def test_paths(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        sess = ctx.session(subject="01", session="04", task="free")
+        paths = stg.paths(sess)
+        assert "ieeg" in paths
+        assert "ecephys" in paths
+        # Verify BIDS path structure for ieeg
+        p = paths["ieeg"]
+        assert "raw" in str(p)
+        assert "sub-01" in str(p)
+        assert "ses-04" in str(p)
+        assert "ieeg" in str(p)  # datatype dir
+        assert p.name == "sub-01_ses-04_task-free_ieeg.lfp"
+
+    def test_paths_subset(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        sess = ctx.session(subject="01", session="04", task="free")
+        paths = stg.paths(sess, members=["ieeg"])
+        assert list(paths.keys()) == ["ieeg"]
+
+    def test_paths_unknown_member(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        sess = ctx.session(subject="01", session="04", task="free")
+        with pytest.raises(KeyError, match="has no member"):
+            stg.paths(sess, members=["nonexistent"])
+
+    def test_have_false(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        sess = ctx.session(subject="01", session="04", task="free")
+        assert not stg.have(sess)
+
+    def test_have_true(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        sess = ctx.session(subject="01", session="04", task="free")
+        # Create all member files
+        for member in ["ieeg", "ecephys"]:
+            p = stg.paths(sess, members=[member])[member]
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+        assert stg.have(sess)
+
+    def test_have_subset(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        sess = ctx.session(subject="01", session="04", task="free")
+        # Create only ieeg file
+        p = stg.paths(sess, members=["ieeg"])["ieeg"]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+        assert stg.have(sess, members=["ieeg"])
+        assert not stg.have(sess)  # ecephys missing
+
+    def test_resolve_prefers_existing(self, tmp_path):
+        """resolve() should return the first stage in prefer order that exists."""
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        sess = ctx.session(subject="01", session="04", task="free")
+
+        # Create raw input files (both members)
+        stg = ctx.stage("raw")
+        for member in stg.members():
+            p = stg.paths(sess, members=[member])[member]
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+
+        # raw should be resolved since interpolate doesn't exist
+        result = stg.resolve(sess, prefer=["interpolate", "raw"])
+        assert result == "raw"
+
+    def test_resolve_across_input_and_output(self, tmp_path):
+        """resolve() should work across input and output stages."""
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        sess = ctx.session(subject="01", session="04", task="free")
+
+        # Create interpolate output files
+        interp_stage = ctx.stage("interpolate")
+        for member in ctx.products("interpolate"):
+            p = sess.get("interpolate", member)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+
+        # interpolate exists, so should be picked first
+        stg = ctx.stage("raw")
+        result = stg.resolve(sess, prefer=["interpolate", "raw"])
+        assert result == "interpolate"
+
+    def test_resolve_not_found(self, tmp_path):
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("raw")
+        sess = ctx.session(subject="01", session="04", task="free")
+        with pytest.raises(FileNotFoundError):
+            stg.resolve(sess, prefer=["interpolate", "raw"])
+
+    def test_stage_alias_to_input(self, tmp_path):
+        """stage_aliases should work for input stages too."""
+        cfg = _sample_flow_config_with_inputs()
+        cfg.extra["stage_aliases"] = {"source": "raw"}
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        stg = ctx.stage("source")
+        assert isinstance(stg, InputStage)
+        assert stg.name == "raw"
+
+    def test_unknown_stage_error_includes_input_stages(self, tmp_path):
+        """KeyError for unknown stage should mention input stages."""
+        cfg = _sample_flow_config_with_inputs()
+        ctx = PipelineContext.from_config(cfg, tmp_path)
+        with pytest.raises(KeyError, match="raw"):
+            ctx.stage("nonexistent")

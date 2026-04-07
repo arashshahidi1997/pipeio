@@ -15,13 +15,8 @@ import yaml
 
 def _find_registry(root: Path) -> Path | None:
     """Locate the pipeline registry, checking .projio/pipeio/ first."""
-    for candidate in (
-        root / ".projio" / "pipeio" / "registry.yml",
-        root / ".pipeio" / "registry.yml",
-    ):
-        if candidate.exists():
-            return candidate
-    return None
+    from pipeio.registry import find_registry
+    return find_registry(root)
 
 
 _NO_REGISTRY = {"error": "No pipeline registry found", "hint": "Run pipeio init"}
@@ -31,12 +26,19 @@ def _resolve_nb_path(flow_dir: Path, name: str) -> Path | None:
     """Resolve a notebook name to its .py path.
 
     Checks layouts in priority order:
-    1. ``.src/`` layout: ``notebooks/.src/{name}.py`` (preferred)
-    2. Flat layout: ``notebooks/{name}.py``
-    3. Subdirectory layout: ``notebooks/{name}/{name}.py`` (legacy)
-    4. Fall back to ``notebook.yml`` entry matching
+    1. Workspace ``.src/`` layouts: ``notebooks/{workspace}/.src/{name}.py``
+    2. Flat ``.src/`` layout: ``notebooks/.src/{name}.py``
+    3. Flat layout: ``notebooks/{name}.py``
+    4. Subdirectory layout: ``notebooks/{name}/{name}.py`` (legacy)
+    5. Fall back to ``notebook.yml`` entry matching
     """
-    # .src/ layout (preferred)
+    # Workspace .src/ layouts (explore and demo)
+    for workspace in ("explore", "demo"):
+        ws_src = flow_dir / "notebooks" / workspace / ".src" / f"{name}.py"
+        if ws_src.exists():
+            return ws_src
+
+    # Flat .src/ layout
     src = flow_dir / "notebooks" / ".src" / f"{name}.py"
     if src.exists():
         return src
@@ -1501,8 +1503,18 @@ def mcp_nb_sync(
                 if candidate.with_suffix(".ipynb").exists():
                     py_path = candidate
                     break
-        if py_path is None or not py_path.with_suffix(".ipynb").exists():
+        if py_path is None:
             return {"error": f"Paired notebook not found: {name}.ipynb"}
+        # Use layout-aware path computation: for workspace .src/ layouts,
+        # the .ipynb lives in the parent dir (notebooks/demo/foo.ipynb),
+        # not alongside the .py (notebooks/demo/.src/foo.ipynb).
+        try:
+            from pipeio.notebook.lifecycle import _nb_output_paths
+            ipynb_path, _ = _nb_output_paths(py_path)
+        except ImportError:
+            ipynb_path = py_path.with_suffix(".ipynb")
+        if not ipynb_path.exists():
+            return {"error": f"Paired notebook not found: {ipynb_path.name}"}
 
     try:
         from pipeio.notebook.lifecycle import nb_sync_one
@@ -4149,18 +4161,45 @@ def mcp_nb_promote(
 # ---------------------------------------------------------------------------
 
 
+def _python_prefix(python_bin: "str | list[str] | None") -> list[str]:
+    """Normalise *python_bin* into a list suitable for subprocess cmd prefix."""
+    if python_bin is None:
+        return []
+    if isinstance(python_bin, list):
+        return list(python_bin)
+    return [python_bin]
+
+
+def _has_papermill(python: "str | list[str]") -> bool:
+    """Check whether *python* can import papermill."""
+    import subprocess
+
+    prefix = _python_prefix(python)
+    try:
+        result = subprocess.run(
+            [*prefix, "-c", "import papermill"],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def mcp_nb_exec(
     root: Path,
     flow: str,
     name: str,
     params: dict[str, Any] | None = None,
     timeout: int = 600,
-    python_bin: str | None = None,
+    python_bin: "str | list[str] | None" = None,
 ) -> dict[str, Any]:
     """Execute a notebook via papermill with optional parameter overrides.
 
     Syncs the notebook first (py → ipynb), then executes via papermill.
-    Returns structured result with status, errors, output path, and elapsed time.
+    Both jupytext and papermill are invoked from ``sys.executable`` (the MCP
+    server's own Python).  The ``-k`` kernel flag controls which Jupyter
+    kernel actually executes the notebook cells.
 
     Args:
         root: Project root.
@@ -4168,10 +4207,17 @@ def mcp_nb_exec(
         name: Notebook basename (without extension).
         params: RunCard parameter overrides (injected into papermill).
         timeout: Cell execution timeout in seconds (default 600).
-        python_bin: Python binary for execution (optional).
+        python_bin: Ignored (kept for API compatibility). Jupytext and
+            papermill always run from ``sys.executable``; cell execution
+            is delegated to the Jupyter kernel specified in notebook.yml.
     """
     import subprocess
+    import sys
     import time
+
+    # Always use the MCP server's own Python for tooling (jupytext, papermill).
+    # Cell execution is handled by the Jupyter kernel (-k flag), not python_bin.
+    server_python: str = sys.executable
 
     from pipeio.registry import PipelineRegistry
 
@@ -4212,17 +4258,24 @@ def mcp_nb_exec(
     # Sync py → ipynb first (with kernel if configured)
     try:
         from pipeio.notebook.lifecycle import _require_jupytext, _jupytext
-        _require_jupytext(python_bin=python_bin)
+        _require_jupytext(python_bin=server_python)
         kernel_args: tuple[str, ...] = ("--set-kernel", kernel) if kernel else ()
         _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path),
-                  *kernel_args, python_bin=python_bin)
+                  *kernel_args, python_bin=server_python)
     except (ImportError, Exception) as exc:
         return {"error": f"Sync failed: {exc}"}
 
-    # Build papermill command
+    # Build papermill command — same server_python, kernel handles cell execution
+    if not _has_papermill(server_python):
+        return {
+            "error": (
+                f"papermill not found in {server_python}. "
+                "Install with: pip install papermill"
+            ),
+        }
+
     output_path = ipynb_path.with_name(f"{name}_executed.ipynb")
-    python = python_bin or "python"
-    cmd = [python, "-m", "papermill", str(ipynb_path), str(output_path),
+    cmd = [server_python, "-m", "papermill", str(ipynb_path), str(output_path),
            "--cwd", str(flow_dir)]
     if kernel:
         cmd.extend(["-k", kernel])
@@ -4255,7 +4308,7 @@ def mcp_nb_exec(
             "name": name,
         }
     except FileNotFoundError:
-        return {"error": f"papermill not found. Install with: pip install papermill"}
+        return {"error": f"Python binary not found: {papermill_python}"}
 
     try:
         output_rel = str(output_path.relative_to(root))

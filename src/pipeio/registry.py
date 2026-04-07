@@ -23,6 +23,20 @@ def slug_ok(name: str) -> bool:
     return bool(_SLUG_RE.match(name))
 
 
+def find_registry(root: Path) -> Path | None:
+    """Locate the pipeline registry, checking .projio/pipeio/ first.
+
+    Returns the path to the registry file, or ``None`` if not found.
+    """
+    for candidate in (
+        root / ".projio" / "pipeio" / "registry.yml",
+        root / ".pipeio" / "registry.yml",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 class ValidationResult(BaseModel):
     """Result of a registry validation run."""
 

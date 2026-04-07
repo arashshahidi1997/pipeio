@@ -11,6 +11,7 @@ from pipeio.registry import (
 )
 from pipeio.smk_log import setup_logging
 from pipeio.resolver import (
+    InputStage,
     PathResolver,
     PipelineContext,
     Session,
@@ -24,6 +25,7 @@ __all__ = [
     "ContractResult",
     "FlowConfig",
     "FlowEntry",
+    "InputStage",
     "ModEntry",
     "PathResolver",
     "PipelineContext",

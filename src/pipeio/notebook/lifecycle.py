@@ -361,7 +361,7 @@ def nb_sync_one(
     formats: list[str] | None = None,
     force: bool = False,
     kernel: str = "",
-    python_bin: str | None = None,
+    python_bin: "str | list[str] | None" = None,
 ) -> dict[str, Any]:
     """Sync a single notebook, optionally in either direction.
 
@@ -433,7 +433,7 @@ def _sync_py2nb(
     formats: list[str],
     force: bool = False,
     kernel: str = "",
-    python_bin: str | None = None,
+    python_bin: "str | list[str] | None" = None,
 ) -> dict[str, Any]:
     """Sync .py → .ipynb / .myst."""
     if not py_path.exists():
@@ -470,7 +470,7 @@ def _sync_nb2py(
     py_path: Path,
     *,
     force: bool = False,
-    python_bin: str | None = None,
+    python_bin: "str | list[str] | None" = None,
 ) -> dict[str, Any]:
     """Sync .ipynb → .py (reverse sync for human edits)."""
     ipynb_path, _ = _nb_output_paths(py_path)
@@ -857,7 +857,7 @@ def nb_lab(
     flow: str | None = None,
     lab_dir: Path | None = None,
     sync: bool = False,
-    python_bin: str | None = None,
+    python_bin: "str | list[str] | None" = None,
 ) -> dict[str, Any]:
     """Build a symlink manifest of active .ipynb notebooks and return its state.
 
@@ -992,7 +992,16 @@ def nb_lab(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _require_jupytext(python_bin: str | None = None) -> None:
+def _python_prefix(python_bin: "str | list[str] | None") -> list[str]:
+    """Normalise *python_bin* into a list suitable for subprocess cmd prefix."""
+    if python_bin is None:
+        return []
+    if isinstance(python_bin, list):
+        return list(python_bin)
+    return [python_bin]
+
+
+def _require_jupytext(python_bin: "str | list[str] | None" = None) -> None:
     """Check that jupytext is available.
 
     When *python_bin* is given, probe via subprocess (the tool may live in a
@@ -1000,9 +1009,10 @@ def _require_jupytext(python_bin: str | None = None) -> None:
     """
     if python_bin:
         import subprocess as _sp
+        prefix = _python_prefix(python_bin)
         try:
             _sp.run(
-                [python_bin, "-m", "jupytext", "--version"],
+                [*prefix, "-m", "jupytext", "--version"],
                 capture_output=True, check=True, timeout=15,
             )
             return
@@ -1030,14 +1040,15 @@ def _require_nbconvert() -> None:
         )
 
 
-def _jupytext(source: Path, *args: str, python_bin: str | None = None) -> None:
+def _jupytext(source: Path, *args: str, python_bin: "str | list[str] | None" = None) -> None:
     """Run jupytext on *source*.
 
     When *python_bin* is given, invoke as ``python_bin -m jupytext`` so the
     tool can live in a different environment from the MCP server.
     """
     if python_bin:
-        cmd = [python_bin, "-m", "jupytext", str(source), *args]
+        prefix = _python_prefix(python_bin)
+        cmd = [*prefix, "-m", "jupytext", str(source), *args]
     else:
         cmd = ["jupytext", str(source), *args]
     subprocess.run(cmd, check=True)
