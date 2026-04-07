@@ -67,6 +67,21 @@ def docs_collect(root: Path) -> list[str]:
     docs_base = root / "docs" / "pipelines"
     collected: list[str] = []
 
+    # Generate top-level index.md for pipelines section
+    pipelines_index = docs_base / "index.md"
+    if not pipelines_index.exists():
+        docs_base.mkdir(parents=True, exist_ok=True)
+        flow_names = [f.name for f in registry.list_flows()]
+        lines = ["# Pipelines", ""]
+        if flow_names:
+            for name in flow_names:
+                lines.append(f"- [{name}]({name}/)")
+        else:
+            lines.append("No flows registered yet.")
+        lines.append("")
+        pipelines_index.write_text("\n".join(lines), encoding="utf-8")
+        collected.append(str(pipelines_index))
+
     for entry in registry.list_flows():
         flow_dir = Path(entry.code_path)
         if not flow_dir.is_absolute():
@@ -183,7 +198,94 @@ def docs_collect(root: Path) -> list[str]:
                         )
                         collected.append(str(dst))
 
+        # --- 4. Generate flow index.md if missing ---
+        flow_index = target / "index.md"
+        if not flow_index.exists():
+            target.mkdir(parents=True, exist_ok=True)
+            flow_index.write_text(
+                f"# {entry.name}\n\n"
+                f"Pipeline flow documentation.\n",
+                encoding="utf-8",
+            )
+            collected.append(str(flow_index))
+
+        # --- 5. Auto-generate DAG SVG if not already collected ---
+        dag_dst = target / "dag.svg"
+        if str(dag_dst) not in collected:
+            snakefile = flow_dir / "Snakefile"
+            if snakefile.exists():
+                try:
+                    dag_svg = _generate_dag_svg(root, entry, snakefile)
+                    if dag_svg:
+                        target.mkdir(parents=True, exist_ok=True)
+                        dag_dst.write_text(dag_svg, encoding="utf-8")
+                        collected.append(str(dag_dst))
+                except Exception:
+                    pass  # non-fatal: DAG generation is best-effort
+
     return collected
+
+
+def _generate_dag_svg(
+    root: Path, entry: Any, snakefile: Path,
+) -> str | None:
+    """Generate a rulegraph SVG via snakemake + graphviz. Returns SVG string or None."""
+    import shutil
+
+    if not shutil.which("dot"):
+        return None
+
+    flow_dir = snakefile.parent
+
+    # Resolve snakemake command
+    smk_cmd = _resolve_snakemake_for_docs()
+
+    cmd = [
+        *smk_cmd,
+        "--snakefile", str(snakefile),
+        "--directory", str(flow_dir),
+        "--rulegraph",
+    ]
+
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, cwd=str(root), timeout=60, check=False,
+    )
+    if result.returncode != 0:
+        return None
+
+    dot_output = result.stdout
+    if not dot_output.strip():
+        return None
+
+    svg_result = subprocess.run(
+        ["dot", "-Tsvg"], input=dot_output, capture_output=True,
+        text=True, timeout=30, check=False,
+    )
+    if svg_result.returncode != 0:
+        return None
+
+    return svg_result.stdout
+
+
+def _resolve_snakemake_for_docs() -> list[str]:
+    """Find snakemake for DAG generation during docs_collect."""
+    import shutil
+
+    binary = shutil.which("snakemake")
+    if binary:
+        return [binary]
+
+    # Try common conda env names
+    import re
+
+    for env in ("cogpy", "snakemake"):
+        for base in ("/storage/share/python/environments/Anaconda3",):
+            for rel in ("condabin/conda", "bin/conda"):
+                conda = Path(base) / rel
+                if conda.is_file():
+                    return [str(conda), "run", "-n", env, "snakemake"]
+
+    return ["snakemake"]
 
 
 def docs_nav(root: Path, *, write: bool = True) -> str:
@@ -202,49 +304,47 @@ def docs_nav(root: Path, *, write: bool = True) -> str:
 
     flow_navs: list[dict[str, Any]] = []
 
-    for pipe_dir in sorted(d for d in docs_base.iterdir() if d.is_dir()):
-        for flow_dir in sorted(d for d in pipe_dir.iterdir() if d.is_dir()):
-            flow_entries: list[dict[str, Any]] = []
+    for flow_dir in sorted(d for d in docs_base.iterdir() if d.is_dir()):
+        flow_entries: list[dict[str, Any]] = []
 
-            # index.md first
-            idx = flow_dir / "index.md"
-            if idx.exists():
-                flow_entries.append(
-                    {"Overview": str(idx.relative_to(docs_base))}
-                )
+        # index.md first
+        idx = flow_dir / "index.md"
+        if idx.exists():
+            flow_entries.append(
+                {"Overview": str(idx.relative_to(docs_base))}
+            )
 
-            # other .md files (excluding index)
-            for md in sorted(flow_dir.glob("*.md")):
-                if md.name == "index.md":
-                    continue
-                title = md.stem.replace("-", " ").replace("_", " ").title()
-                flow_entries.append(
-                    {title: str(md.relative_to(docs_base))}
-                )
+        # other .md files (excluding index)
+        for md in sorted(flow_dir.glob("*.md")):
+            if md.name == "index.md":
+                continue
+            title = md.stem.replace("-", " ").replace("_", " ").title()
+            flow_entries.append(
+                {title: str(md.relative_to(docs_base))}
+            )
 
-            # DAG SVG
-            dag = flow_dir / "dag.svg"
-            if dag.exists():
-                flow_entries.append(
-                    {"DAG": str(dag.relative_to(docs_base))}
-                )
+        # DAG SVG
+        dag = flow_dir / "dag.svg"
+        if dag.exists():
+            flow_entries.append(
+                {"DAG": str(dag.relative_to(docs_base))}
+            )
 
-            # notebooks subdirectory
-            nb_dir = flow_dir / "notebooks"
-            if nb_dir.is_dir():
-                nb_entries: list[dict[str, str]] = []
-                for f in sorted(nb_dir.iterdir()):
-                    if f.suffix in (".html", ".md") and f.is_file():
-                        title = f.stem.replace("-", " ").replace("_", " ").title()
-                        nb_entries.append(
-                            {title: str(f.relative_to(docs_base))}
-                        )
-                if nb_entries:
-                    flow_entries.append({"Notebooks": nb_entries})
+        # notebooks subdirectory
+        nb_dir = flow_dir / "notebooks"
+        if nb_dir.is_dir():
+            nb_entries: list[dict[str, str]] = []
+            for f in sorted(nb_dir.iterdir()):
+                if f.suffix in (".html", ".md") and f.is_file():
+                    title = f.stem.replace("-", " ").replace("_", " ").title()
+                    nb_entries.append(
+                        {title: str(f.relative_to(docs_base))}
+                    )
+            if nb_entries:
+                flow_entries.append({"Notebooks": nb_entries})
 
-            if flow_entries:
-                label = f"{pipe_dir.name}/{flow_dir.name}"
-                flow_navs.append({label: flow_entries})
+        if flow_entries:
+            flow_navs.append({flow_dir.name: flow_entries})
 
     if not flow_navs:
         return "# docs/pipelines/ exists but contains no docs.\n"

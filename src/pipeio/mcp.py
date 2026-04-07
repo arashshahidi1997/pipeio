@@ -4367,6 +4367,10 @@ def mcp_dag_export(
     Shells out to ``snakemake --rulegraph`` (or ``--dag``, ``--d3dag``)
     and optionally converts dot output to SVG via graphviz.
 
+    When ``output_format="svg"``, the SVG is automatically written to
+    ``docs/pipelines/<pipe>/<flow>/dag.svg`` for site integration.
+    Other formats (dot, mermaid, json) return content only.
+
     Args:
         root: Project root.
         flow: Flow name (optional for single-flow pipes).
@@ -4448,13 +4452,27 @@ def mcp_dag_export(
                 "dot": graph_output,
             }
 
-    return {
-        "flow": entry.name,
+    actual_format = "json" if graph_type == "d3dag" else output_format
+
+    # SVG → auto-write to docs/pipelines/<flow>/dag.svg
+    written_path = None
+    if output_format == "svg":
+        out = root / "docs" / "pipelines" / entry.name / "dag.svg"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(graph_output, encoding="utf-8")
+        written_path = str(out.relative_to(root))
+
+    result_dict: dict[str, Any] = {
+        "pipe": entry.pipe,
         "flow": entry.name,
         "graph_type": graph_type,
-        "format": "json" if graph_type == "d3dag" else output_format,
-        "output": graph_output,
+        "format": actual_format,
     }
+    if written_path:
+        result_dict["written"] = written_path
+    else:
+        result_dict["output"] = graph_output
+    return result_dict
 
 
 def mcp_report(

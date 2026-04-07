@@ -437,6 +437,61 @@ def _cmd_flow_mods(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_flow_dag(args: argparse.Namespace) -> int:
+    """Generate DAG SVG for a flow."""
+    import shutil
+    import subprocess
+
+    root = Path(args.root) if args.root else _find_root()
+    entry = _resolve_flow(root, args.flow)
+    if entry is None:
+        return 1
+
+    flow_dir = _flow_code_dir(root, entry)
+    snakefile = flow_dir / "Snakefile"
+    if not snakefile.exists():
+        print(f"No Snakefile in {flow_dir}", file=sys.stderr)
+        return 1
+
+    fmt = getattr(args, "format", "svg") or "svg"
+    smk_cmd = _resolve_snakemake()
+
+    # Build snakemake command
+    graph_flag = "--dag" if getattr(args, "full", False) else "--rulegraph"
+    cmd = [*smk_cmd, "--snakefile", str(snakefile), "--directory", str(flow_dir), graph_flag]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(root), timeout=60, check=False)
+    if result.returncode != 0:
+        print(f"Snakemake failed: {result.stderr[:500]}", file=sys.stderr)
+        return 1
+
+    dot_output = result.stdout
+
+    if fmt == "dot":
+        print(dot_output)
+        return 0
+
+    # Convert to SVG
+    if not shutil.which("dot"):
+        print("graphviz 'dot' not found — install with: apt install graphviz", file=sys.stderr)
+        print(dot_output)
+        return 1
+
+    svg_result = subprocess.run(
+        ["dot", "-Tsvg"], input=dot_output, capture_output=True, text=True, timeout=30, check=False,
+    )
+    if svg_result.returncode != 0:
+        print(f"graphviz dot failed: {svg_result.stderr[:500]}", file=sys.stderr)
+        return 1
+
+    # Write to docs path
+    out = root / "docs" / "pipelines" / entry.name / "dag.svg"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(svg_result.stdout, encoding="utf-8")
+    print(f"  written: {out.relative_to(root)}")
+    return 0
+
+
 def _resolve_snakemake() -> list[str]:
     """Find snakemake binary, with conda env wrapping if needed."""
     import re
@@ -1117,6 +1172,11 @@ def main(argv: list[str] | None = None) -> int:
     flow_mods_p = flow_sub.add_parser("mods", help="List mods for a flow")
     flow_mods_p.add_argument("flow", help="Flow name")
 
+    flow_dag = flow_sub.add_parser("dag", help="Generate DAG SVG for a flow")
+    flow_dag.add_argument("flow", help="Flow name")
+    flow_dag.add_argument("--format", choices=["svg", "dot"], default="svg", help="Output format (default svg)")
+    flow_dag.add_argument("--full", action="store_true", help="Full job DAG instead of rulegraph")
+
     # pipeio nb {pair,sync,exec,publish,status}
     nb_p = sub.add_parser("nb", help="Notebook lifecycle")
     nb_p.add_argument("--root", dest="root", help="Project root")
@@ -1213,6 +1273,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_flow_log(args)
         if args.flow_command == "mods":
             return _cmd_flow_mods(args)
+        if args.flow_command == "dag":
+            return _cmd_flow_dag(args)
         flow_p.print_help()
         return 0
 
