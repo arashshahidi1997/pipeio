@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **modkey.bib default output** — changed from `docs/pipelines/modkey.bib` to `.projio/pipeio/modkey.bib` to keep generated files out of `docs_dir` (prevents mkdocs false-positive citation warnings)
+
 ### Added
 - **`pipeio_target_paths`** MCP tool — resolve output paths via PipelineContext (list/resolve/expand modes)
 - **`pipeio flow dag`** CLI command — generate DAG SVG to `docs/pipelines/<flow>/dag.svg`
