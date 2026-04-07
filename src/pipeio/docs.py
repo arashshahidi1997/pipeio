@@ -223,6 +223,13 @@ def docs_collect(root: Path) -> list[str]:
                 except Exception:
                     pass  # non-fatal: DAG generation is best-effort
 
+    # --- 6. Write docs/pipelines/mkdocs.yml for monorepo plugin ---
+    if collected:
+        nav_yaml = docs_nav(root, write=True)
+        sub_mkdocs = docs_base / "mkdocs.yml"
+        if sub_mkdocs.exists():
+            collected.append(str(sub_mkdocs))
+
     return collected
 
 
