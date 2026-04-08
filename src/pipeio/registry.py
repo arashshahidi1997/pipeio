@@ -222,7 +222,7 @@ def _discover_flows(
     # Check if top_dir itself is a flow (has Snakefile or config.yml at root)
     if (top_dir / "Snakefile").exists() or (top_dir / "config.yml").exists():
         name = top_dir.name
-        doc_path = _find_doc_path(docs_dir, name) if docs_dir else None
+        doc_path = _find_doc_path(docs_dir, name, top_dir)
         config_path = _resolve_config_path(top_dir)
         flows[name] = FlowEntry(
             name=name,
@@ -241,7 +241,7 @@ def _discover_flows(
             name = child.name
             if name in flows:
                 continue
-            doc_path = _find_doc_path(docs_dir, name) if docs_dir else None
+            doc_path = _find_doc_path(docs_dir, name, child)
             config_path = _resolve_config_path(child)
             flows[name] = FlowEntry(
                 name=name,
@@ -257,7 +257,7 @@ def _discover_flows(
         name = smk.stem
         if name in flows:
             continue
-        doc_path = _find_doc_path(docs_dir, name) if docs_dir else None
+        doc_path = _find_doc_path(docs_dir, name, top_dir)
         config_path = _resolve_config_path(top_dir)
         flows[name] = FlowEntry(
             name=name,
@@ -327,24 +327,42 @@ def _discover_mods(flow_dir: Path) -> dict[str, ModEntry]:
         mod_name = m.group(1) if m else rule
         mod_rules.setdefault(mod_name, []).append(rule)
 
-    # Check for per-mod docs in flow_dir/docs/
+    # Check for per-mod docs in flow_dir/docs/{mod}/
     mods: dict[str, ModEntry] = {}
     for mod_name, rules in sorted(mod_rules.items()):
-        doc_path = flow_dir / "docs" / f"mod-{mod_name}.md"
+        mod_doc_dir = flow_dir / "docs" / mod_name
+        if mod_doc_dir.is_dir() and any(
+            (mod_doc_dir / f).exists() for f in ("theory.md", "spec.md")
+        ):
+            mod_doc = str(mod_doc_dir)
+        else:
+            mod_doc = None
         mods[mod_name] = ModEntry(
             name=mod_name,
             rules=sorted(rules),
-            doc_path=str(doc_path) if doc_path.exists() else None,
+            doc_path=mod_doc,
         )
 
     return mods
 
 
-def _find_doc_path(docs_dir: Path | None, flow: str) -> str | None:
-    """Look for documentation for a flow in the docs directory."""
-    if docs_dir is None or not docs_dir.exists():
-        return None
-    flow_doc = docs_dir / flow
-    if flow_doc.is_dir():
-        return str(flow_doc)
+def _find_doc_path(
+    docs_dir: Path | None,
+    flow: str,
+    flow_dir: Path | None = None,
+) -> str | None:
+    """Look for documentation for a flow.
+
+    Checks two locations in order:
+    1. External docs directory: ``docs_dir / flow``
+    2. Flow-local docs: ``flow_dir / "docs"``
+    """
+    if docs_dir is not None and docs_dir.exists():
+        flow_doc = docs_dir / flow
+        if flow_doc.is_dir():
+            return str(flow_doc)
+    if flow_dir is not None:
+        local_doc = flow_dir / "docs"
+        if local_doc.is_dir():
+            return str(local_doc)
     return None

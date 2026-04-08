@@ -163,6 +163,38 @@ def test_scan_with_docs(tmp_path):
     assert entry.doc_path is not None
 
 
+def test_scan_with_flow_local_docs(tmp_path):
+    """scan() should detect flow-local docs/ directory even without docs_dir."""
+    pipes_dir = tmp_path / "pipelines"
+
+    (pipes_dir / "brainstate").mkdir(parents=True)
+    (pipes_dir / "brainstate" / "Snakefile").touch()
+    (pipes_dir / "brainstate" / "docs").mkdir()
+    (pipes_dir / "brainstate" / "docs" / "index.md").touch()
+
+    reg = PipelineRegistry.scan(pipes_dir)
+    entry = reg.get("brainstate")
+    assert entry.doc_path is not None
+    assert entry.doc_path.endswith("/docs")
+
+
+def test_scan_external_docs_preferred_over_local(tmp_path):
+    """External docs_dir takes precedence over flow-local docs/."""
+    pipes_dir = tmp_path / "pipelines"
+    docs_dir = tmp_path / "docs"
+
+    (pipes_dir / "brainstate").mkdir(parents=True)
+    (pipes_dir / "brainstate" / "Snakefile").touch()
+    (pipes_dir / "brainstate" / "docs").mkdir()
+
+    (docs_dir / "brainstate").mkdir(parents=True)
+
+    reg = PipelineRegistry.scan(pipes_dir, docs_dir=docs_dir)
+    entry = reg.get("brainstate")
+    assert entry.doc_path is not None
+    assert str(docs_dir) in entry.doc_path
+
+
 # ---- validate() ----
 
 def test_validate_clean():

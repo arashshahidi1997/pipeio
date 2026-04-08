@@ -111,6 +111,10 @@ def docs_collect(root: Path) -> list[str]:
                 # Route mod facet dirs into mods/ subdirectory
                 if parts and parts[0] in mod_dirs:
                     dst = target / "mods" / rel
+                # overview.md at flow root → copy as index.md to avoid
+                # duplicate "Overview" nav entries
+                elif rel == Path("overview.md"):
+                    dst = target / "index.md"
                 else:
                     dst = target / rel
                 if _is_stale(src_file, dst):
@@ -158,6 +162,23 @@ def docs_collect(root: Path) -> list[str]:
                             collected.append(str(out))
             except Exception:
                 pass
+
+        # Generate notebooks/index.md if notebooks were published
+        nb_target = target / "notebooks"
+        if nb_target.is_dir():
+            nb_files = sorted(
+                f for f in nb_target.iterdir()
+                if f.is_file() and f.suffix in (".html", ".md") and f.name != "index.md"
+            )
+            if nb_files:
+                nb_index = nb_target / "index.md"
+                lines = [f"# Notebooks — {entry.name}", ""]
+                for f in nb_files:
+                    title = f.stem.replace("-", " ").replace("_", " ").title()
+                    lines.append(f"- [{title}]({f.name})")
+                lines.append("")
+                nb_index.write_text("\n".join(lines), encoding="utf-8")
+                collected.append(str(nb_index))
 
         # --- 3. publish.yml artifacts (DAG, report, scripts) ---
         pub_cfg_path = flow_dir / "publish.yml"
@@ -333,9 +354,9 @@ def docs_nav(root: Path, *, write: bool = True) -> str:
                 {"Overview": str(idx.relative_to(docs_base))}
             )
 
-        # other .md files (excluding index)
+        # other .md files (excluding index and overview which is used as index)
         for md in sorted(flow_dir.glob("*.md")):
-            if md.name == "index.md":
+            if md.name in ("index.md", "overview.md"):
                 continue
             title = md.stem.replace("-", " ").replace("_", " ").title()
             flow_entries.append(
@@ -352,8 +373,16 @@ def docs_nav(root: Path, *, write: bool = True) -> str:
         # notebooks subdirectory
         nb_dir = flow_dir / "notebooks"
         if nb_dir.is_dir():
-            nb_entries: list[dict[str, str]] = []
+            nb_entries: list[dict[str, Any]] = []
+            # Use index.md as landing page if present
+            nb_idx = nb_dir / "index.md"
+            if nb_idx.exists():
+                nb_entries.append(
+                    {"Overview": str(nb_idx.relative_to(docs_base))}
+                )
             for f in sorted(nb_dir.iterdir()):
+                if f.name == "index.md":
+                    continue
                 if f.suffix in (".html", ".md") and f.is_file():
                     title = f.stem.replace("-", " ").replace("_", " ").title()
                     nb_entries.append(
@@ -361,6 +390,22 @@ def docs_nav(root: Path, *, write: bool = True) -> str:
                     )
             if nb_entries:
                 flow_entries.append({"Notebooks": nb_entries})
+
+        # mods subdirectory (theory.md, spec.md per mod)
+        mods_dir = flow_dir / "mods"
+        if mods_dir.is_dir():
+            mod_nav_entries: list[dict[str, Any]] = []
+            for mod_dir in sorted(d for d in mods_dir.iterdir() if d.is_dir()):
+                mod_pages: list[dict[str, str]] = []
+                for md in sorted(mod_dir.glob("*.md")):
+                    title = md.stem.replace("-", " ").replace("_", " ").title()
+                    mod_pages.append(
+                        {title: str(md.relative_to(docs_base))}
+                    )
+                if mod_pages:
+                    mod_nav_entries.append({mod_dir.name: mod_pages})
+            if mod_nav_entries:
+                flow_entries.append({"Modules": mod_nav_entries})
 
         if flow_entries:
             flow_navs.append({flow_dir.name: flow_entries})
@@ -395,7 +440,7 @@ def _generate_scripts_index(
     flow_dir: Path,
     root: Path,
 ) -> str:
-    """Generate a markdown script index with git links."""
+    """Generate a markdown script index."""
     lines = [
         f"# Scripts — {flow_name}",
         "",
@@ -414,7 +459,8 @@ def _generate_scripts_index(
                     desc = text[3:end].strip().split("\n")[0]
         except Exception:
             pass
-        lines.append(f"| [`{sf.name}`]({rel}) | {desc} |")
+        # Use code-formatted text instead of links (scripts are outside docs_dir)
+        lines.append(f"| `{sf.name}` | {desc} |")
     lines.append("")
     return "\n".join(lines)
 

@@ -147,12 +147,11 @@ def test_docs_collect_copies_flow_docs(tmp_path):
     _scaffold_project(tmp_path)
     from pipeio.docs import docs_collect
     collected = docs_collect(tmp_path)
-    # Should have collected index.md and mod-smoothing.md
-    doc_files = [p for p in collected if p.endswith(".md")]
-    assert len(doc_files) == 2
     target = tmp_path / "docs" / "pipelines" / "denoise"
     assert (target / "index.md").exists()
     assert (target / "mod-smoothing.md").exists()
+    # Top-level pipelines index is also generated
+    assert (tmp_path / "docs" / "pipelines" / "index.md").exists()
 
 
 def test_docs_collect_faceted_mod_docs(tmp_path):
@@ -294,6 +293,94 @@ def test_docs_nav_includes_notebooks(tmp_path):
     from pipeio.docs import docs_nav
     result = docs_nav(tmp_path)
     assert "analysis" in result.lower()
+
+
+def test_docs_collect_overview_as_index(tmp_path):
+    """overview.md should be used as index.md, avoiding duplicate nav entries."""
+    _scaffold_project(tmp_path)
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+    # Remove the default index.md and add overview.md instead
+    (flow_dir / "docs" / "index.md").unlink()
+    (flow_dir / "docs" / "overview.md").write_text("# Denoise Overview\n", encoding="utf-8")
+
+    from pipeio.docs import docs_collect
+    collected = docs_collect(tmp_path)
+
+    target = tmp_path / "docs" / "pipelines" / "denoise"
+    # overview.md should have been copied as index.md
+    assert (target / "index.md").exists()
+    assert "Denoise Overview" in (target / "index.md").read_text()
+    # overview.md should NOT exist separately
+    assert not (target / "overview.md").exists()
+
+
+def test_docs_collect_overview_no_duplicate_nav(tmp_path):
+    """Nav should not have duplicate Overview entries when overview.md exists."""
+    flow_dir = tmp_path / "docs" / "pipelines" / "denoise"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "index.md").write_text("# Denoise\n", encoding="utf-8")
+    (flow_dir / "overview.md").write_text("# Denoise\n", encoding="utf-8")
+
+    from pipeio.docs import docs_nav
+    result = docs_nav(tmp_path, write=False)
+    # overview.md should be excluded since index.md is the canonical Overview
+    assert result.count("Overview") == 1
+
+
+def test_docs_collect_notebooks_index(tmp_path):
+    """Notebook collection should generate a notebooks/index.md."""
+    flow_dir = tmp_path / "docs" / "pipelines" / "denoise" / "notebooks"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "analysis.html").write_text("<html/>", encoding="utf-8")
+
+    _scaffold_project(tmp_path)
+    from pipeio.docs import docs_collect
+    docs_collect(tmp_path)
+
+    # Verify notebooks/index.md was generated
+    nb_index = tmp_path / "docs" / "pipelines" / "denoise" / "notebooks" / "index.md"
+    assert nb_index.exists()
+    content = nb_index.read_text()
+    assert "analysis" in content.lower()
+
+
+def test_docs_nav_includes_modules(tmp_path):
+    """Nav should include a Modules section for mod docs."""
+    flow_dir = tmp_path / "docs" / "pipelines" / "denoise"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "index.md").write_text("# Denoise\n", encoding="utf-8")
+
+    mod_dir = flow_dir / "mods" / "filter"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / "theory.md").write_text("# Theory\n", encoding="utf-8")
+    (mod_dir / "spec.md").write_text("# Spec\n", encoding="utf-8")
+
+    from pipeio.docs import docs_nav
+    result = docs_nav(tmp_path, write=False)
+    assert "Modules" in result
+    assert "filter" in result
+    assert "Theory" in result
+    assert "Spec" in result
+
+
+def test_docs_collect_scripts_no_links(tmp_path):
+    """Scripts.md should use code-formatted text, not links pointing outside docs_dir."""
+    _scaffold_project(tmp_path)
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+
+    (flow_dir / "publish.yml").write_text("scripts: true\n", encoding="utf-8")
+    scripts_dir = flow_dir / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "filter.py").write_text('"""Apply bandpass filter."""\n', encoding="utf-8")
+
+    from pipeio.docs import docs_collect
+    docs_collect(tmp_path)
+
+    scripts_md = (tmp_path / "docs" / "pipelines" / "denoise" / "scripts.md").read_text()
+    assert "`filter.py`" in scripts_md
+    # Should NOT contain markdown links to source paths
+    assert "](code/" not in scripts_md
+    assert "](../../" not in scripts_md
 
 
 # ---------------------------------------------------------------------------

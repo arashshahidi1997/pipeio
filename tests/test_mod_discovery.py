@@ -80,13 +80,36 @@ def test_discover_mods_with_doc_path(tmp_path):
     (tmp_path / "Snakefile").write_text(
         "rule filter_raw:\n    pass\n",
         encoding="utf-8")
-    # Create a mod doc file
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "mod-filter.md").write_text("# Filter mod\n", encoding="utf-8")
+    # Create faceted mod doc directory with theory.md
+    (tmp_path / "docs" / "filter").mkdir(parents=True)
+    (tmp_path / "docs" / "filter" / "theory.md").write_text("# Filter theory\n", encoding="utf-8")
 
     mods = _discover_mods(tmp_path)
     assert mods["filter"].doc_path is not None
-    assert "mod-filter.md" in mods["filter"].doc_path
+    assert mods["filter"].doc_path.endswith("/filter")
+
+
+def test_discover_mods_with_spec_only(tmp_path):
+    (tmp_path / "Snakefile").write_text(
+        "rule filter_raw:\n    pass\n",
+        encoding="utf-8")
+    # spec.md alone should also set doc_path
+    (tmp_path / "docs" / "filter").mkdir(parents=True)
+    (tmp_path / "docs" / "filter" / "spec.md").write_text("# Filter spec\n", encoding="utf-8")
+
+    mods = _discover_mods(tmp_path)
+    assert mods["filter"].doc_path is not None
+
+
+def test_discover_mods_empty_doc_dir_ignored(tmp_path):
+    (tmp_path / "Snakefile").write_text(
+        "rule filter_raw:\n    pass\n",
+        encoding="utf-8")
+    # Empty mod doc dir (no theory.md or spec.md) should not set doc_path
+    (tmp_path / "docs" / "filter").mkdir(parents=True)
+
+    mods = _discover_mods(tmp_path)
+    assert mods["filter"].doc_path is None
 
 
 def test_discover_mods_no_doc_path(tmp_path):
