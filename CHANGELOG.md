@@ -3,7 +3,12 @@
 ## Unreleased
 
 ### Changed
+- **`docs/pipelines/` is now a build artifact (gitignored)** — source of truth for hand-written docs is `code/pipelines/<flow>/docs/`. Collected files now carry source-path headers (`<!-- DO NOT EDIT — Source: ... -->`). Auto-generated files (index stubs, scripts.md, report.md, notebook index) carry `<!-- AUTO-GENERATED -->` headers. Prevents agents and humans from editing the wrong copy.
 - **modkey.bib default output** — changed from `docs/pipelines/modkey.bib` to `.projio/pipeio/modkey.bib` to keep generated files out of `docs_dir` (prevents mkdocs false-positive citation warnings)
+
+### Added (conventions)
+- **Flow Overview convention** — `docs/overview.md` per flow: Purpose, Input/Output, Mod Chain, Design Decisions, Known Gaps. Scaffolded by `flow_new`, collected by `docs_collect`. See `docs/specs/pipeio/pipeline-docs.md`.
+- **Pipeline Architecture convention** — `code/pipelines/architecture.md` per project: mermaid diagram, flow table, data flow chains, design principles. New `pipeio_architecture_init` tool scaffolds from registry + cross_flow. Collected by `docs_collect`, placed first in pipelines nav.
 
 ### Added
 - **`pipeio_target_paths`** MCP tool — resolve output paths via PipelineContext (list/resolve/expand modes)
