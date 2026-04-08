@@ -1101,7 +1101,7 @@ def mcp_modkey_bib(
 
 
 def mcp_docs_collect(root: Path) -> dict[str, Any]:
-    """Collect flow-local docs and notebook outputs into docs/pipelines/."""
+    """Collect flow-local docs and notebook outputs into docs/pipelines/ (build artifact, gitignored)."""
     from pipeio.docs import docs_collect
 
     try:

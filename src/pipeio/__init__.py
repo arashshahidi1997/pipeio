@@ -18,8 +18,8 @@ from pipeio.resolver import (
     SimpleResolver,
     Stage,
 )
-
 __all__ = [
+    "BidsPaths",
     "Check",
     "Contract",
     "ContractResult",
@@ -39,3 +39,11 @@ __all__ = [
     "setup_logging",
     "slug_ok",
 ]
+
+
+def __getattr__(name: str):
+    if name == "BidsPaths":
+        from pipeio.adapters.bids import BidsPaths
+
+        return BidsPaths
+    raise AttributeError(f"module 'pipeio' has no attribute {name!r}")

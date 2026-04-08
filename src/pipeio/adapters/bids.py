@@ -8,6 +8,8 @@ Requires the ``bids`` extra: ``pip install pipeio[bids]``
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -144,3 +146,201 @@ class BidsResolver:
             matches = filtered
 
         return matches
+
+
+# ---------------------------------------------------------------------------
+# BidsPaths — snakebids-backed path resolver (ported from sutil.bids.paths)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _FamilyView(Mapping[str, str]):
+    """Dict-like view over the members of a single registry family."""
+
+    _paths: BidsPaths
+    _family: str
+
+    def __getitem__(self, member: str) -> str:
+        return self._paths(self._family, member)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._paths.members(self._family))
+
+    def __len__(self) -> int:
+        return len(self._paths.members(self._family))
+
+    def path(self, member: str, **entities: Any) -> str:
+        return self._paths(self._family, member, **entities)
+
+    def __repr__(self) -> str:
+        mem = self._paths.members(self._family)
+        preview = ", ".join(mem[:6]) + (" ..." if len(mem) > 6 else "")
+        return f"<family {self._family}: {preview}>"
+
+
+class BidsPaths(Mapping[str, _FamilyView]):
+    """BIDS path resolver using ``snakebids.bids()`` for path construction.
+
+    Drop-in replacement for the former ``sutil.bids.paths.BidsPaths``.
+    Requires ``snakebids`` (``pip install pipeio[bids]``).
+
+    Parameters
+    ----------
+    registry : dict
+        Registry mapping families → ``{bids: {…}, members: {…}, …}``.
+    root_dir : str | Path
+        Root output directory for constructed paths.
+    base_inputs : dict | None
+        Output of ``snakebids.generate_inputs()`` — provides wildcard
+        templates inherited via ``base_input`` in registry families.
+    wildcard_sets : dict | None
+        Named wildcard sets referenced by ``wildcards`` in registry families.
+
+    Usage
+    -----
+    ::
+
+        from snakebids import generate_inputs
+        from pipeio.adapters.bids import BidsPaths
+
+        inputs = generate_inputs(bids_dir, config["pybids_inputs"])
+        out = BidsPaths(config["registry"], output_dir, inputs)
+        path = out("badlabel", "npy", subject="test", session="01")
+    """
+
+    def __init__(
+        self,
+        registry: dict,
+        root_dir: str | Path,
+        base_inputs: dict[str, Any] | None = None,
+        wildcard_sets: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            from snakebids import bids as _bids  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "BidsPaths requires snakebids. "
+                "Install with: pip install pipeio[bids]"
+            )
+        self.registry = registry
+        self.root_dir = Path(root_dir)
+        self.base_inputs = base_inputs
+        self.wildcard_sets = wildcard_sets
+
+    # ---- Mapping interface ----
+
+    def __getitem__(self, family: str) -> _FamilyView:
+        if family not in self.registry:
+            raise KeyError(self._unknown_family(family))
+        return _FamilyView(self, family)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(sorted(self.registry.keys()))
+
+    def __len__(self) -> int:
+        return len(self.registry)
+
+    # ---- Introspection ----
+
+    def members(self, family: str) -> list[str]:
+        """Return sorted member names for *family*."""
+        if family not in self.registry:
+            raise KeyError(self._unknown_family(family))
+        return sorted(self.registry[family]["members"].keys())
+
+    def artifacts(self) -> str:
+        """Return a human-readable listing of all families and members."""
+        lines: list[str] = []
+        for fam in sorted(self.registry):
+            lines.append(f"{fam}:")
+            for mem in self.members(fam):
+                lines.append(f"  - {mem}")
+        return "\n".join(lines)
+
+    def _unknown_family(self, family: str) -> str:
+        opts = ", ".join(sorted(self.registry)[:30])
+        more = " ..." if len(self.registry) > 30 else ""
+        return f"Unknown family '{family}'. Available: {opts}{more}"
+
+    def _unknown_member(self, family: str, member: str) -> str:
+        opts = ", ".join(self.members(family))
+        return f"Unknown member '{member}' for family '{family}'. Available: {opts}"
+
+    # ---- Core path builder ----
+
+    def __call__(
+        self, family: str, member: str | None = None, **entities: Any
+    ) -> str:
+        """Resolve a BIDS path string for *(family, member)* with entity overrides.
+
+        Delegates to ``snakebids.bids()`` after merging registry defaults,
+        base_input wildcards, and caller-supplied entity overrides.
+        """
+        from snakebids import bids
+
+        if family not in self.registry:
+            raise KeyError(self._unknown_family(family))
+
+        fam = self.registry[family]
+
+        if member is None:
+            member = fam.get("default_member") or next(iter(fam["members"]))
+
+        if member not in fam["members"]:
+            raise KeyError(self._unknown_member(family, member))
+
+        mem = fam["members"][member]
+
+        kwargs: dict[str, Any] = {}
+
+        # Inherit wildcard templates from base_input
+        base = fam.get("base_input")
+        if base:
+            if not self.base_inputs:
+                raise ValueError(
+                    f"Family '{family}' specifies base_input='{base}', "
+                    "but no inputs were provided to BidsPaths."
+                )
+            if base not in self.base_inputs:
+                raise KeyError(
+                    f"Family '{family}' specifies base_input='{base}', "
+                    "but no such input found in registry."
+                )
+            kwargs.update(self.base_inputs[base].wildcards)
+
+        # Named wildcard sets
+        wildcard_set = fam.get("wildcards", [])
+        if wildcard_set:
+            if not self.wildcard_sets:
+                raise ValueError(
+                    f"Family '{family}' specifies wildcards='{wildcard_set}', "
+                    "but no wildcard sets were provided to BidsPaths."
+                )
+            if wildcard_set not in self.wildcard_sets:
+                raise KeyError(
+                    f"Family '{family}' specifies wildcards='{wildcard_set}', "
+                    "but no such wildcard set found in registry."
+                )
+            kwargs.update(self.wildcard_sets[wildcard_set])
+
+        # Family-level BIDS defaults
+        kwargs.update(fam.get("bids", {}))
+
+        # Member-level overrides
+        kwargs.update(mem)
+
+        # Caller entity overrides
+        kwargs.update(entities)
+
+        # Root handling
+        root_rel = kwargs.pop("root", "")
+        root = self.root_dir / root_rel if root_rel else self.root_dir
+
+        # Drop YAML nulls
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+
+        return bids(root=root, **kwargs)
+
+    def __repr__(self) -> str:
+        n = len(self.registry)
+        return f"<BidsPaths: {n} families, root={self.root_dir}>"
