@@ -4487,18 +4487,19 @@ def mcp_report(
     Uses ``snakemake --report`` to produce a self-contained HTML report
     with runtime statistics, provenance, and annotated outputs.
 
-    When ``target`` is specified (e.g. ``"report"``), snakemake runs that
-    target rule first, which is useful for flows that define a ``rule report``
-    filtering to existing outputs only.
+    Automatically resolves existing output files from the flow's registry
+    and passes them as explicit targets, so the report succeeds even when
+    some outputs are missing (no ``rule report`` needed in the Snakefile).
+
+    When ``target`` is specified (e.g. a rule name), it overrides the
+    auto-resolution and uses that target directly.
 
     Args:
         root: Project root.
         flow: Flow name (optional for single-flow pipes).
         output_path: Where to write the report (relative to root).
             Defaults to ``derivatives/{flow}/report.html``.
-        target: Target rule to run before generating the report (e.g.
-            ``"report"``). If empty, ``--report`` runs against existing
-            metadata only.
+        target: Explicit target rule (overrides auto-resolution).
         snakemake_cmd: Command tokens to invoke snakemake.
     """
     import subprocess
@@ -4531,15 +4532,43 @@ def mcp_report(
     report_abs = root / output_path
     report_abs.parent.mkdir(parents=True, exist_ok=True)
 
+    # Auto-resolve existing outputs as targets if no explicit target given
+    targets: list[str] = []
+    if target:
+        targets = [target]
+    else:
+        try:
+            from pipeio.config import FlowConfig
+            from pipeio.resolver import PipelineContext
+
+            if entry.config_path:
+                cfg_path = Path(entry.config_path)
+                if not cfg_path.is_absolute():
+                    cfg_path = root / cfg_path
+                if cfg_path.exists():
+                    flow_config = FlowConfig.from_yaml(cfg_path)
+                    ctx = PipelineContext.from_config(flow_config, root)
+                    for group_name in ctx.groups():
+                        for member_name in ctx.products(group_name):
+                            existing = ctx.expand(group_name, member_name)
+                            targets.extend(str(p) for p in existing)
+        except Exception:
+            pass  # fall through to no-target mode
+
+    if not targets:
+        return {
+            "error": "No existing outputs found to report on. "
+            "Run the pipeline first, or specify a target rule.",
+        }
+
     # Build command
     cmd = [
         *snake_base,
         "--snakefile", str(snakefile),
         "--directory", str(flow_dir),
         "--report", str(report_abs),
+        *targets,
     ]
-    if target:
-        cmd.append(target)
 
     try:
         result = subprocess.run(
@@ -4553,11 +4582,12 @@ def mcp_report(
         return {"error": f"Snakemake report failed: {result.stderr[:1000]}"}
 
     return {
-        "flow": entry.name,
+        "pipe": entry.pipe,
         "flow": entry.name,
         "report_path": output_path,
         "exists": report_abs.exists(),
         "size_kb": round(report_abs.stat().st_size / 1024, 1) if report_abs.exists() else 0,
+        "targets_resolved": len(targets),
     }
 
 

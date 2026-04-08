@@ -198,14 +198,24 @@ def docs_collect(root: Path) -> list[str]:
                         shutil.copy2(dag_src, dst)
                     collected.append(str(dst))
 
-            # Report: copy latest report.html
+            # Report: link to report.html in derivatives (too heavy to copy)
             if pub_cfg.report:
-                report_src = flow_dir / "report.html"
-                if report_src.exists():
-                    dst = target / "report.html"
-                    if _is_stale(report_src, dst):
-                        target.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(report_src, dst)
+                report_candidates = [
+                    flow_dir / "report.html",
+                    root / "derivatives" / entry.name / "report.html",
+                ]
+                report_src = next((r for r in report_candidates if r.exists()), None)
+                if report_src is not None:
+                    target.mkdir(parents=True, exist_ok=True)
+                    dst = target / "report.md"
+                    rel_report = report_src.relative_to(root)
+                    dst.write_text(
+                        f"# Report — {entry.name}\n\n"
+                        f"[Open full Snakemake report](/{rel_report})\n\n"
+                        f"Generated from {len(list(report_src.parent.glob('*.html')))} HTML file(s) "
+                        f"in `{rel_report.parent}/`.\n",
+                        encoding="utf-8",
+                    )
                     collected.append(str(dst))
 
             # Scripts: generate script index with git links

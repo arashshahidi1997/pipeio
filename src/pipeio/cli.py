@@ -492,6 +492,32 @@ def _cmd_flow_dag(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_flow_report(args: argparse.Namespace) -> int:
+    """Generate snakemake HTML report for a flow."""
+    root = Path(args.root) if args.root else _find_root()
+    entry = _resolve_flow(root, args.flow)
+    if entry is None:
+        return 1
+
+    from pipeio.mcp import mcp_report
+
+    result = mcp_report(
+        root,
+        flow=entry.name,
+        target=getattr(args, "target", "") or "",
+        snakemake_cmd=_resolve_snakemake(),
+    )
+
+    if "error" in result:
+        print(f"Error: {result['error']}", file=sys.stderr)
+        return 1
+
+    print(f"  report:  {result['report_path']}")
+    print(f"  size:    {result.get('size_kb', 0)} KB")
+    print(f"  targets: {result.get('targets_resolved', 0)} outputs resolved")
+    return 0
+
+
 def _resolve_snakemake() -> list[str]:
     """Find snakemake binary, with conda env wrapping if needed."""
     import re
@@ -1177,6 +1203,10 @@ def main(argv: list[str] | None = None) -> int:
     flow_dag.add_argument("--format", choices=["svg", "dot"], default="svg", help="Output format (default svg)")
     flow_dag.add_argument("--full", action="store_true", help="Full job DAG instead of rulegraph")
 
+    flow_report = flow_sub.add_parser("report", help="Generate snakemake HTML report")
+    flow_report.add_argument("flow", help="Flow name")
+    flow_report.add_argument("--target", help="Explicit target rule (overrides auto-resolution)")
+
     # pipeio nb {pair,sync,exec,publish,status}
     nb_p = sub.add_parser("nb", help="Notebook lifecycle")
     nb_p.add_argument("--root", dest="root", help="Project root")
@@ -1275,6 +1305,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_flow_mods(args)
         if args.flow_command == "dag":
             return _cmd_flow_dag(args)
+        if args.flow_command == "report":
+            return _cmd_flow_report(args)
         flow_p.print_help()
         return 0
 
