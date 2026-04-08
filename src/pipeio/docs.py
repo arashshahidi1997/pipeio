@@ -109,6 +109,21 @@ def docs_collect(root: Path) -> list[str]:
         pipelines_index.write_text("\n".join(lines), encoding="utf-8")
         collected.append(str(pipelines_index))
 
+    # --- 0. Collect pipeline-level architecture doc ---
+    # Resolve the pipelines directory from registry entries
+    _first = next(iter(registry.list_flows()), None)
+    if _first is not None:
+        _first_code = Path(_first.code_path)
+        if not _first_code.is_absolute():
+            _first_code = root / _first_code
+        pipelines_dir = _first_code.parent
+    else:
+        pipelines_dir = root / "code" / "pipelines"
+    arch_src = pipelines_dir / "architecture.md"
+    if arch_src.is_file():
+        _copy_with_header(arch_src, docs_base / "architecture.md", root)
+        collected.append(str(docs_base / "architecture.md"))
+
     for entry in registry.list_flows():
         flow_dir = Path(entry.code_path)
         if not flow_dir.is_absolute():
@@ -456,6 +471,11 @@ def docs_nav(root: Path, *, write: bool = True) -> str:
 
     if not flow_navs:
         return "# docs/pipelines/ exists but contains no docs.\n"
+
+    # Insert architecture.md at the top if present
+    arch = docs_base / "architecture.md"
+    if arch.exists():
+        flow_navs.insert(0, {"Architecture": "architecture.md"})
 
     # Build the sub-mkdocs.yml for monorepo plugin
     sub_config = {

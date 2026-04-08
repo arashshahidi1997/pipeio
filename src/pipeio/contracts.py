@@ -7,8 +7,11 @@ pipeline run.
 
 from __future__ import annotations
 
+import importlib.util
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Callable
 
 
@@ -62,6 +65,26 @@ class Contract:
 # ---------------------------------------------------------------------------
 
 
+def import_flow_module(flow_dir: Path, module_name: str) -> ModuleType | None:
+    """Import a module from a flow directory without mutating sys.path.
+
+    Returns ``None`` if the module file does not exist.  Raises on import
+    errors (e.g. missing dependencies) so the caller can report them.
+    """
+    module_path = flow_dir / f"{module_name}.py"
+    if not module_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(
+        f"pipeio._flow_modules.{flow_dir.name}.{module_name}",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 @dataclass
 class FlowValidation:
     """Result of validating a single flow's I/O contracts."""
@@ -70,13 +93,95 @@ class FlowValidation:
     passed: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    has_contracts: bool = False
+    contract_functions: list[str] = field(default_factory=list)
+    contract_results: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
         return len(self.errors) == 0
 
 
-def validate_flow_contracts(root: Path) -> list[FlowValidation]:
+_CONTRACT_FUNCTIONS = ("validate_inputs", "validate_outputs")
+
+
+def _discover_contracts(flow_dir: Path, fv: FlowValidation) -> ModuleType | None:
+    """Try to import contracts.py from *flow_dir* and populate *fv* fields.
+
+    Returns the imported module on success, ``None`` otherwise.
+    """
+    try:
+        mod = import_flow_module(flow_dir, "contracts")
+    except Exception as exc:
+        fv.warnings.append(f"contracts.py exists but failed to import: {exc}")
+        fv.has_contracts = True
+        return None
+
+    if mod is None:
+        return None
+
+    fv.has_contracts = True
+    for fn_name in _CONTRACT_FUNCTIONS:
+        fn = getattr(mod, fn_name, None)
+        if callable(fn):
+            fv.contract_functions.append(fn_name)
+    if not fv.contract_functions:
+        fv.warnings.append(
+            "contracts.py found but contains no validate_inputs/validate_outputs"
+        )
+    else:
+        fv.passed.append(
+            f"contracts.py: {', '.join(fv.contract_functions)}"
+        )
+    return mod
+
+
+def _run_contract_function(
+    mod: ModuleType,
+    fn_name: str,
+    kwargs: dict[str, Any],
+    fv: FlowValidation,
+) -> None:
+    """Execute a single contract function and record results in *fv*."""
+    fn = getattr(mod, fn_name, None)
+    if not callable(fn):
+        return
+
+    # Only pass kwargs that the function actually accepts.
+    sig = inspect.signature(fn)
+    accepted = {
+        k: v for k, v in kwargs.items() if k in sig.parameters
+    }
+    missing = [
+        p.name
+        for p in sig.parameters.values()
+        if p.default is inspect.Parameter.empty and p.name not in accepted
+    ]
+    if missing:
+        fv.contract_results[fn_name] = {
+            "status": "skipped",
+            "reason": f"missing required arguments: {missing}",
+        }
+        return
+
+    try:
+        info = fn(**accepted)
+        fv.contract_results[fn_name] = {"status": "passed", "info": info}
+        fv.passed.append(f"{fn_name}: passed")
+    except Exception as exc:
+        fv.contract_results[fn_name] = {
+            "status": "failed",
+            "error": str(exc),
+        }
+        fv.errors.append(f"{fn_name}: {exc}")
+
+
+def validate_flow_contracts(
+    root: Path,
+    *,
+    run: bool = False,
+    run_kwargs: dict[str, dict[str, Any]] | None = None,
+) -> list[FlowValidation]:
     """Validate I/O contracts for all flows in the registry.
 
     For each flow with a ``config.yml``, checks:
@@ -87,6 +192,21 @@ def validate_flow_contracts(root: Path) -> list[FlowValidation]:
     4. **Registry groups** — each group has at least one member with
        non-empty suffix and extension.
     5. **Config validation** — runs ``FlowConfig.validate_config()``.
+    6. **Contract discovery** — imports ``contracts.py`` and introspects
+       ``validate_inputs`` / ``validate_outputs``.
+    7. **Contract execution** (when *run=True*) — calls discovered functions
+       with keyword arguments from *run_kwargs*.
+
+    Parameters
+    ----------
+    root:
+        Project root directory.
+    run:
+        If ``True``, execute discovered contract functions.
+    run_kwargs:
+        Per-function keyword arguments for execution, keyed by function
+        name (``"validate_inputs"`` / ``"validate_outputs"``).
+        Values must be ``Path`` objects for file arguments.
     """
     from pipeio.config import FlowConfig
     from pipeio.registry import PipelineRegistry
@@ -166,6 +286,19 @@ def validate_flow_contracts(root: Path) -> list[FlowValidation]:
                         f"Member {member_name!r} in {group_name!r}: "
                         f"missing suffix or extension"
                     )
+
+        # --- Contract discovery (step 6) ---
+        flow_dir = Path(entry.code_path)
+        if not flow_dir.is_absolute():
+            flow_dir = root / flow_dir
+        contracts_mod = _discover_contracts(flow_dir, fv)
+
+        # --- Contract execution (step 7, only when run=True) ---
+        if run and contracts_mod is not None and fv.contract_functions:
+            kw = run_kwargs or {}
+            for fn_name in fv.contract_functions:
+                fn_kw = kw.get(fn_name, {})
+                _run_contract_function(contracts_mod, fn_name, fn_kw, fv)
 
         results.append(fv)
 

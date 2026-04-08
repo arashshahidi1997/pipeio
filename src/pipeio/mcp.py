@@ -133,6 +133,45 @@ def mcp_flow_status(root: Path, flow: str) -> dict[str, Any]:
             except Exception:
                 pass
 
+    # Detect contracts.py
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    contracts_path = flow_dir / "contracts.py"
+    if contracts_path.exists():
+        result["has_contracts"] = True
+        try:
+            from pipeio.contracts import import_flow_module
+            mod = import_flow_module(flow_dir, "contracts")
+            if mod is not None:
+                fns = [
+                    fn for fn in ("validate_inputs", "validate_outputs")
+                    if callable(getattr(mod, fn, None))
+                ]
+                result["contract_functions"] = fns
+        except Exception:
+            result["contract_functions"] = []
+    else:
+        result["has_contracts"] = False
+
+    # Detect snakemake unit tests (.tests/)
+    tests_dir = flow_dir / ".tests"
+    if tests_dir.is_dir():
+        unit_dir = tests_dir / "unit"
+        rules_tested: list[str] = []
+        if unit_dir.is_dir():
+            rules_tested = sorted(
+                d.name for d in unit_dir.iterdir() if d.is_dir()
+            )
+        result["unit_tests"] = {
+            "exists": True,
+            "rules_tested": rules_tested,
+            "run_command": f"pytest {flow_dir / '.tests/'}",
+        }
+    else:
+        result["unit_tests"] = {"exists": False}
+
     return result
 
 
@@ -472,6 +511,63 @@ def mcp_flow_new(
             encoding="utf-8",
         )
         created.append("docs/index.md")
+
+    # docs/overview.md — flow overview template
+    overview = flow_dir / "docs" / "overview.md"
+    if not overview.exists():
+        # Read config for input/output paths if available
+        _input_dir = ""
+        _output_dir = f"derivatives/{flow}"
+        _input_manifest = ""
+        _output_manifest = f"derivatives/{flow}/manifest.yml"
+        if cfg_path.exists():
+            try:
+                _cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                _input_dir = _cfg.get("input_dir", _input_dir)
+                _output_dir = _cfg.get("output_dir", _output_dir)
+                _input_manifest = _cfg.get("input_manifest", _input_manifest)
+                _output_manifest = _cfg.get("output_manifest", _output_manifest)
+            except Exception:
+                pass
+        overview.write_text(
+            f"# {flow} — Flow Overview\n"
+            f"\n"
+            f"## Purpose\n"
+            f"\n"
+            f"<!-- What does this flow produce? Why is it a single flow\n"
+            f"     rather than split into multiple? What downstream flows\n"
+            f"     consume its output? -->\n"
+            f"\n"
+            f"## Input\n"
+            f"\n"
+            f"- Input directory: `{_input_dir}`\n"
+            f"- Input manifest: `{_input_manifest}`\n"
+            f"\n"
+            f"## Output\n"
+            f"\n"
+            f"- Output directory: `{_output_dir}`\n"
+            f"- Output manifest: `{_output_manifest}`\n"
+            f"\n"
+            f"## Mod Chain\n"
+            f"\n"
+            f"<!-- Processing order with rationale. -->\n"
+            f"\n"
+            f"| Order | Mod | Purpose |\n"
+            f"|-------|-----|---------|\n"
+            f"| 1 | | |\n"
+            f"\n"
+            f"## Design Decisions\n"
+            f"\n"
+            f"<!-- Why this mod ordering? Why certain steps read from\n"
+            f"     raw vs intermediate? -->\n"
+            f"\n"
+            f"## Known Gaps\n"
+            f"\n"
+            f"<!-- Flow-level issues, missing mods, planned additions.\n"
+            f"     Remove entries as they are resolved. -->\n",
+            encoding="utf-8",
+        )
+        created.append("docs/overview.md")
 
     try:
         code_path = str(flow_dir.relative_to(root))
@@ -1138,23 +1234,40 @@ def mcp_docs_nav(root: Path, *, write: bool = True) -> dict[str, Any]:
     }
 
 
-def mcp_contracts_validate(root: Path) -> dict[str, Any]:
-    """Validate I/O contracts for all flows in the registry."""
+def mcp_contracts_validate(
+    root: Path,
+    *,
+    run: bool = False,
+    run_kwargs: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Validate I/O contracts for all flows in the registry.
+
+    With *run=False* (default): checks config structure and discovers
+    ``contracts.py`` modules.
+
+    With *run=True*: also executes discovered contract functions.
+    *run_kwargs* maps function names to keyword arguments (paths).
+    """
     from pipeio.contracts import validate_flow_contracts
 
-    results = validate_flow_contracts(root)
+    results = validate_flow_contracts(root, run=run, run_kwargs=run_kwargs)
     if not results:
         return _NO_REGISTRY
 
     flow_results = []
     for fv in results:
-        flow_results.append({
+        entry: dict[str, Any] = {
             "flow": fv.flow_id,
             "valid": fv.ok,
             "passed": fv.passed,
             "warnings": fv.warnings,
             "errors": fv.errors,
-        })
+            "has_contracts": fv.has_contracts,
+            "contract_functions": fv.contract_functions,
+        }
+        if fv.contract_results:
+            entry["contract_results"] = fv.contract_results
+        flow_results.append(entry)
 
     all_valid = all(fv.ok for fv in results)
     return {
