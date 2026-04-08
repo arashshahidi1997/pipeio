@@ -36,6 +36,7 @@ __all__ = [
     "SimpleResolver",
     "Stage",
     "ValidationResult",
+    "matlab2shell",
     "setup_logging",
     "slug_ok",
 ]
@@ -46,4 +47,8 @@ def __getattr__(name: str):
         from pipeio.adapters.bids import BidsPaths
 
         return BidsPaths
+    if name == "matlab2shell":
+        from pipeio.matlab import matlab2shell
+
+        return matlab2shell
     raise AttributeError(f"module 'pipeio' has no attribute {name!r}")
