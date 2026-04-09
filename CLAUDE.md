@@ -163,11 +163,11 @@ pipeio docs nav                          — generate MkDocs nav fragment
 
 ### MCP Tool Surface
 
-Tools exposed via projio's MCP server (43 tools across 10 categories):
+Tools exposed via projio's MCP server (44 tools across 10 categories):
 
 **Flow & registry (4):** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_registry_scan`, `pipeio_registry_validate`
 
-**Notebook lifecycle (14):** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_update`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
+**Notebook lifecycle (15):** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_update`, `pipeio_nb_move`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
 
 **Mod management (4):** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_context`, `pipeio_mod_create`
 
