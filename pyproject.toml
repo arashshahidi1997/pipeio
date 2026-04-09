@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Pipeline registry, notebook lifecycle, and flow management for research repositories"
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Arash Shahidi" }]
+authors = [{ name = "Arash Shahidi", email = "A.Shahidi@campus.lmu.de" }]
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["pipeline", "workflow", "snakemake", "notebook", "registry", "research"]
@@ -19,6 +19,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
     "Topic :: Software Development :: Build Tools",
 ]
@@ -26,6 +27,7 @@ dependencies = ["pyyaml>=6.0", "pydantic>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/arashshahidi1997/pipeio"
+Documentation = "https://arashshahidi1997.github.io/pipeio/"
 Repository = "https://github.com/arashshahidi1997/pipeio"
 Issues = "https://github.com/arashshahidi1997/pipeio/issues"
 
