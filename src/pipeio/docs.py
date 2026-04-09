@@ -1,29 +1,43 @@
-"""Pipeline docs collection: write-local, publish-to-site.
+"""Pipeline docs collection: two-phase export-then-collect.
 
 Flow authors write docs next to their pipeline code::
 
     code/pipelines/denoise/
       docs/
-        index.md
+        overview.md
         mod-smoothing.md
       notebooks/
         notebook.yml
-        analysis.py
+        demo/.src/analysis.py
 
 ``docs_collect`` assembles them into ``docs/pipelines/<flow>/``
 for MkDocs, and ``docs_nav`` emits a YAML nav fragment.
 
-**Important:** ``docs/pipelines/`` is a **build artifact** (gitignored).
-The source of truth for hand-written docs is ``code/pipelines/<flow>/docs/``.
-Collected files carry a source-path header comment; never edit them directly.
+**Two-phase design:**
+
+1. **Export** — component-owned functions generate artifacts into
+   ``{flow}/.build/`` (DAG SVGs, notebook HTML). Each component owns
+   its export logic; ``docs_collect`` just calls them.
+2. **Collect** — pure file copiers assemble ``.build/`` outputs,
+   hand-written docs, and reports into ``docs/pipelines/<flow>/``.
+
+The source tree (``code/pipelines/<flow>/docs/``) is read-only during
+collection. ``docs/pipelines/`` is a build artifact (gitignored).
+Collected files carry a source-path header; never edit them directly.
+
+**overview.md convention:** If a flow has ``docs/overview.md`` but no
+``docs/index.md``, overview.md is used as the flow index content. If both
+exist, both are collected as separate pages.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 from pydantic import BaseModel
@@ -40,11 +54,37 @@ _AUTO_GENERATED_HEADER = (
 )
 
 
+_BARE_DIR_LINK_RE = re.compile(r"\]\(([^)]+)/\)")
+"""Matches markdown links ending with a bare directory slash, e.g. ``](foo/)``."""
+
+_MERMAID_CLICK_RE = re.compile(
+    r'(click\s+\w+\s+(?:href\s+)?)"(?!\.\./)(?!https?://)([^"]+)"'
+)
+"""Matches mermaid click directives with bare relative URLs."""
+
+
+def _normalize_dir_links(text: str) -> str:
+    """Rewrite bare directory links ``](dir/)`` → ``](dir/index.md)``."""
+    return _BARE_DIR_LINK_RE.sub(r"](\1/index.md)", text)
+
+
+def _rewrite_mermaid_click_links(text: str) -> str:
+    """Prefix bare relative mermaid click-link URLs with ``../``.
+
+    ``architecture.md`` is served at ``/pipelines/architecture/`` so bare
+    paths like ``"preprocess_ieeg/"`` would resolve to
+    ``/pipelines/architecture/preprocess_ieeg/`` instead of
+    ``/pipelines/preprocess_ieeg/``.  Adding ``../`` fixes the resolution.
+    """
+    return _MERMAID_CLICK_RE.sub(r'\1"../\2"', text)
+
+
 def _copy_with_header(src: Path, dst: Path, root: Path) -> None:
     """Copy a file, prepending a source-path header for markdown files."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.suffix == ".md":
         text = src.read_text(encoding="utf-8")
+        text = _normalize_dir_links(text)
         rel = src.relative_to(root)
         header = _GENERATED_HEADER.format(source=rel)
         dst.write_text(header + text, encoding="utf-8")
@@ -67,22 +107,393 @@ class PublishConfig(BaseModel):
         return cls(**raw)
 
 
+# ---------------------------------------------------------------------------
+# Collector protocol + context
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CollectContext:
+    """Per-flow context passed to exporters and collectors."""
+
+    entry: Any  # FlowEntry from registry (Any to avoid circular import)
+    flow_dir: Path  # absolute path to flow code directory
+    target: Path  # output dir: docs/pipelines/{flow}/
+    root: Path  # project root
+    publish: PublishConfig  # from publish.yml (defaults if absent)
+
+    @property
+    def build_dir(self) -> Path:
+        """Per-flow build directory for exported artifacts."""
+        return self.flow_dir / ".build"
+
+
+class Collector(Protocol):
+    """Interface for artifact collectors (phase 2 — pure copiers)."""
+
+    def collect(self, ctx: CollectContext) -> list[str]: ...
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Export functions — generate artifacts into .build/
+# ---------------------------------------------------------------------------
+
+def export_dag(ctx: CollectContext) -> str | None:
+    """Generate DAG SVG into ``{flow}/.build/dag.svg``.
+
+    Uses snakemake rulegraph + graphviz. Returns the output path on
+    success, or None if generation was skipped or failed.
+    """
+    snakefile = ctx.flow_dir / "Snakefile"
+    if not snakefile.exists():
+        return None
+
+    try:
+        dag_svg = _generate_dag_svg(ctx.root, ctx.entry, snakefile)
+    except Exception:
+        return None  # non-fatal: DAG generation is best-effort
+
+    if not dag_svg:
+        return None
+
+    out = ctx.build_dir / "dag.svg"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(dag_svg, encoding="utf-8")
+    return str(out)
+
+
+def export_notebooks(ctx: CollectContext) -> list[str]:
+    """Export publishable notebook HTML/MyST into ``{flow}/.build/notebooks/``.
+
+    Reads ``notebook.yml``, filters explore/investigate notebooks, and
+    converts publishable entries via nbconvert. Also generates an
+    ``index.md`` listing in the build directory.
+
+    Returns list of exported file paths.
+    """
+    nb_cfg_path = ctx.flow_dir / "notebooks" / "notebook.yml"
+    if not nb_cfg_path.exists():
+        return []
+
+    from pipeio.notebook.config import NotebookConfig
+
+    try:
+        nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+    except Exception:
+        return []
+
+    exported: list[str] = []
+    build_nb = ctx.build_dir / "notebooks"
+    fmt = nb_cfg.publish.format  # "html" or "myst"
+
+    for nb_entry in nb_cfg.entries:
+        py_path = ctx.flow_dir / nb_entry.path
+        name = py_path.stem
+
+        from pipeio.notebook.lifecycle import _nb_output_paths
+        ipynb_path, myst_path = _nb_output_paths(py_path)
+
+        # Explore notebooks are never published by default
+        kind = getattr(nb_entry, "kind", "") or ""
+        if kind in ("investigate", "explore") and not nb_entry.publish_html and not nb_entry.publish_myst:
+            continue
+
+        if nb_entry.publish_html or (fmt == "html" and (nb_entry.publish_html or nb_entry.publish_myst)):
+            if ipynb_path.exists():
+                build_nb.mkdir(parents=True, exist_ok=True)
+                out = build_nb / f"{name}.html"
+                if _is_stale(ipynb_path, out):
+                    _nbconvert_html(ipynb_path, out)
+                exported.append(str(out))
+
+        if nb_entry.publish_myst and fmt == "myst":
+            if myst_path.exists():
+                build_nb.mkdir(parents=True, exist_ok=True)
+                out = build_nb / f"{name}.md"
+                if _is_stale(myst_path, out):
+                    shutil.copy2(myst_path, out)
+                exported.append(str(out))
+
+    # Generate index.md listing in .build/notebooks/
+    if build_nb.is_dir():
+        nb_files = sorted(
+            f for f in build_nb.iterdir()
+            if f.is_file() and f.suffix in (".html", ".md") and f.name != "index.md"
+        )
+        if nb_files:
+            nb_index = build_nb / "index.md"
+            lines = [_AUTO_GENERATED_HEADER.rstrip(), f"# Notebooks — {ctx.entry.name}", ""]
+            for f in nb_files:
+                title = f.stem.replace("-", " ").replace("_", " ").title()
+                lines.append(f"- [{title}]({f.name})")
+            lines.append("")
+            nb_index.write_text("\n".join(lines), encoding="utf-8")
+            exported.append(str(nb_index))
+
+    return exported
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Collectors — pure file copiers
+# ---------------------------------------------------------------------------
+
+class DocsCollector:
+    """Copy hand-written docs from ``{flow}/docs/`` to the output tree.
+
+    Routes mod facet directories (containing theory.md/spec.md/delta.md)
+    into ``mods/{mod}/``. Uses overview.md as the flow index when no
+    source index.md exists.
+    """
+
+    def collect(self, ctx: CollectContext) -> list[str]:
+        collected: list[str] = []
+        flow_docs = ctx.flow_dir / "docs"
+        if not flow_docs.is_dir():
+            return collected
+
+        # Detect mod subdirectories (contain theory.md or spec.md)
+        mod_dirs = {
+            d.name for d in flow_docs.iterdir()
+            if d.is_dir() and any(
+                (d / f).exists() for f in ("theory.md", "spec.md", "delta.md")
+            )
+        }
+        has_source_index = (flow_docs / "index.md").is_file()
+        for src_file in sorted(flow_docs.rglob("*")):
+            if not src_file.is_file():
+                continue
+            rel = src_file.relative_to(flow_docs)
+            parts = rel.parts
+            # Route mod facet dirs into mods/ subdirectory
+            if parts and parts[0] in mod_dirs:
+                dst = ctx.target / "mods" / rel
+            # overview.md at flow root → use as index only when no
+            # source index.md exists; otherwise keep as separate page
+            elif rel == Path("overview.md") and not has_source_index:
+                dst = ctx.target / "index.md"
+            else:
+                dst = ctx.target / rel
+            if _is_stale(src_file, dst):
+                _copy_with_header(src_file, dst, ctx.root)
+            collected.append(str(dst))
+
+        return collected
+
+
+class NotebookCollector:
+    """Copy pre-built notebook artifacts from ``.build/notebooks/`` to the output tree.
+
+    Expects ``export_notebooks()`` to have already generated HTML/MyST
+    into ``{flow}/.build/notebooks/``. This collector is a pure copier.
+    """
+
+    def collect(self, ctx: CollectContext) -> list[str]:
+        collected: list[str] = []
+        build_nb = ctx.build_dir / "notebooks"
+        if not build_nb.is_dir():
+            return collected
+
+        nb_target = ctx.target / "notebooks"
+        for src in sorted(build_nb.iterdir()):
+            if not src.is_file():
+                continue
+            if src.suffix not in (".html", ".md"):
+                continue
+            dst = nb_target / src.name
+            if src.suffix == ".html":
+                # HTML files are copied as-is (no source header)
+                if _is_stale(src, dst):
+                    nb_target.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+            else:
+                # .md files get the generated header
+                if _is_stale(src, dst):
+                    nb_target.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+            collected.append(str(dst))
+
+        return collected
+
+
+def _embed_dag_in_index(target: Path) -> None:
+    """Append a DAG section to ``index.md`` if ``dag.svg`` exists but isn't referenced."""
+    index = target / "index.md"
+    dag = target / "dag.svg"
+    if not index.exists() or not dag.exists():
+        return
+    text = index.read_text(encoding="utf-8")
+    if "dag.svg" in text:
+        return  # already referenced
+    text = text.rstrip("\n") + "\n\n## DAG\n\n![DAG](dag.svg)\n"
+    index.write_text(text, encoding="utf-8")
+
+
+class DagCollector:
+    """Copy pre-built DAG SVG to the output tree and embed in the flow overview.
+
+    Checks ``.build/dag.svg`` first (from ``export_dag``), then
+    ``{flow}/dag.svg`` (legacy / publish.yml convention).  After copying,
+    appends a DAG section to ``index.md`` if it exists but doesn't already
+    reference the SVG.
+    """
+
+    def collect(self, ctx: CollectContext) -> list[str]:
+        dag_dst = ctx.target / "dag.svg"
+
+        # Prefer .build/dag.svg (from export phase)
+        dag_src = ctx.build_dir / "dag.svg"
+        if not dag_src.exists():
+            # Backward compat: flow-level dag.svg (publish.yml convention)
+            if ctx.publish.dag:
+                dag_src = ctx.flow_dir / "dag.svg"
+
+        if not dag_src.exists():
+            return []
+
+        if _is_stale(dag_src, dag_dst):
+            ctx.target.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(dag_src, dag_dst)
+
+        # Embed DAG reference in existing index.md (from DocsCollector)
+        _embed_dag_in_index(ctx.target)
+
+        return [str(dag_dst)]
+
+
+class ReportCollector:
+    """Copy Snakemake report HTML and generate a link page.
+
+    Gated by ``publish.report``. Searches for report.html in the
+    derivatives directory first, then the flow directory.
+    """
+
+    def collect(self, ctx: CollectContext) -> list[str]:
+        if not ctx.publish.report:
+            return []
+
+        collected: list[str] = []
+        report_candidates = [
+            ctx.root / "derivatives" / ctx.entry.name / "report.html",
+            ctx.flow_dir / "report.html",
+        ]
+        report_src = next((r for r in report_candidates if r.exists()), None)
+        if report_src is None:
+            return collected
+
+        ctx.target.mkdir(parents=True, exist_ok=True)
+        # Copy full HTML for local serving
+        dst_html = ctx.target / "report.html"
+        if _is_stale(report_src, dst_html):
+            shutil.copy2(report_src, dst_html)
+        collected.append(str(dst_html))
+        # Markdown summary that links to the local copy
+        dst_md = ctx.target / "report.md"
+        dst_md.write_text(
+            _AUTO_GENERATED_HEADER +
+            f"# Report — {ctx.entry.name}\n\n"
+            f"[Open full Snakemake report](report.html)\n",
+            encoding="utf-8",
+        )
+        collected.append(str(dst_md))
+        return collected
+
+
+class ScriptsCollector:
+    """Generate a script index page from ``{flow}/scripts/*.py``.
+
+    Gated by ``publish.scripts``.
+    """
+
+    def collect(self, ctx: CollectContext) -> list[str]:
+        if not ctx.publish.scripts:
+            return []
+
+        scripts_dir = ctx.flow_dir / "scripts"
+        if not scripts_dir.is_dir():
+            return []
+
+        script_files = sorted(scripts_dir.glob("*.py"))
+        if not script_files:
+            return []
+
+        ctx.target.mkdir(parents=True, exist_ok=True)
+        dst = ctx.target / "scripts.md"
+        dst.write_text(
+            _generate_scripts_index(
+                ctx.entry.name, script_files, ctx.flow_dir, ctx.root
+            ),
+            encoding="utf-8",
+        )
+        return [str(dst)]
+
+
+class IndexCollector:
+    """Generate a stub ``index.md`` if no other collector provided one.
+
+    Always runs last in the collector chain.  When ``dag.svg`` is present
+    in the target directory (copied by ``DagCollector``), the generated
+    stub embeds it.
+    """
+
+    def collect(self, ctx: CollectContext) -> list[str]:
+        flow_index = ctx.target / "index.md"
+        if flow_index.exists():
+            return []
+
+        ctx.target.mkdir(parents=True, exist_ok=True)
+        lines = [
+            _AUTO_GENERATED_HEADER.rstrip(),
+            f"# {ctx.entry.name}",
+            "",
+            "Pipeline flow documentation.",
+        ]
+        # Embed DAG if available (DagCollector runs before IndexCollector)
+        if (ctx.target / "dag.svg").exists():
+            lines.extend(["", "## DAG", "", "![DAG](dag.svg)"])
+        lines.append("")
+        flow_index.write_text("\n".join(lines), encoding="utf-8")
+        return [str(flow_index)]
+
+
+# ---------------------------------------------------------------------------
+# Collector chain — order matters (IndexCollector must be last)
+# ---------------------------------------------------------------------------
+
+_COLLECTORS: list[Collector] = [
+    DocsCollector(),
+    NotebookCollector(),
+    DagCollector(),
+    ReportCollector(),
+    ScriptsCollector(),
+    IndexCollector(),
+]
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
 def _find_registry(root: Path) -> Path | None:
     """Locate the pipeline registry, checking .projio/pipeio/ first."""
     from pipeio.registry import find_registry
     return find_registry(root)
 
 
-def docs_collect(root: Path) -> list[str]:
+def docs_collect(root: Path, *, export: bool = True) -> list[str]:
     """Collect flow-local docs and notebook outputs into ``docs/pipelines/``.
 
-    For each flow in the registry:
+    Two-phase pipeline:
 
-    1. Copy ``<flow_dir>/docs/*`` to ``docs/pipelines/<pipe>/<flow>/``
-    2. Publish notebooks to ``docs/pipelines/<pipe>/<flow>/notebooks/``
-       (HTML by default, or MyST if configured)
+    1. **Export** (when ``export=True``): generate artifacts into each
+       flow's ``.build/`` directory — DAG SVGs via snakemake, notebook
+       HTML via nbconvert.
+    2. **Collect**: run the collector chain to copy hand-written docs,
+       pre-built exports, reports, and generated indexes into the
+       output tree.
 
-    Returns list of collected/published file paths.
+    Pass ``export=False`` to skip generation when exports were already
+    produced independently (e.g. via MCP tools or CI).
+
+    Returns list of collected file paths.
     """
     from pipeio.registry import PipelineRegistry
 
@@ -102,15 +513,14 @@ def docs_collect(root: Path) -> list[str]:
         lines = [_AUTO_GENERATED_HEADER.rstrip(), "# Pipelines", ""]
         if flow_names:
             for name in flow_names:
-                lines.append(f"- [{name}]({name}/)")
+                lines.append(f"- [{name}]({name}/index.md)")
         else:
             lines.append("No flows registered yet.")
         lines.append("")
         pipelines_index.write_text("\n".join(lines), encoding="utf-8")
         collected.append(str(pipelines_index))
 
-    # --- 0. Collect pipeline-level architecture doc ---
-    # Resolve the pipelines directory from registry entries
+    # Collect pipeline-level architecture doc
     _first = next(iter(registry.list_flows()), None)
     if _first is not None:
         _first_code = Path(_first.code_path)
@@ -121,9 +531,17 @@ def docs_collect(root: Path) -> list[str]:
         pipelines_dir = root / "code" / "pipelines"
     arch_src = pipelines_dir / "architecture.md"
     if arch_src.is_file():
-        _copy_with_header(arch_src, docs_base / "architecture.md", root)
-        collected.append(str(docs_base / "architecture.md"))
+        arch_dst = docs_base / "architecture.md"
+        arch_dst.parent.mkdir(parents=True, exist_ok=True)
+        text = arch_src.read_text(encoding="utf-8")
+        text = _normalize_dir_links(text)
+        text = _rewrite_mermaid_click_links(text)
+        rel = arch_src.relative_to(root)
+        header = _GENERATED_HEADER.format(source=rel)
+        arch_dst.write_text(header + text, encoding="utf-8")
+        collected.append(str(arch_dst))
 
+    # Process each flow
     for entry in registry.list_flows():
         flow_dir = Path(entry.code_path)
         if not flow_dir.is_absolute():
@@ -131,186 +549,33 @@ def docs_collect(root: Path) -> list[str]:
         if not flow_dir.is_dir():
             continue
 
-        target = docs_base / entry.name
+        # Load publish config once per flow
+        pub_path = flow_dir / "publish.yml"
+        try:
+            pub_cfg = PublishConfig.from_yaml(pub_path) if pub_path.exists() else PublishConfig()
+        except Exception:
+            pub_cfg = PublishConfig()
 
-        # --- 1. Collect hand-written docs ---
-        # Faceted mod docs (docs/{mod}/theory.md) → mods/{mod}/theory.md
-        # Flow-level docs (docs/index.md) → index.md (preserved as-is)
-        flow_docs = flow_dir / "docs"
-        if flow_docs.is_dir():
-            # Detect mod subdirectories (contain theory.md or spec.md)
-            mod_dirs = {
-                d.name for d in flow_docs.iterdir()
-                if d.is_dir() and any(
-                    (d / f).exists() for f in ("theory.md", "spec.md", "delta.md")
-                )
-            }
-            for src_file in sorted(flow_docs.rglob("*")):
-                if not src_file.is_file():
-                    continue
-                rel = src_file.relative_to(flow_docs)
-                parts = rel.parts
-                # Route mod facet dirs into mods/ subdirectory
-                if parts and parts[0] in mod_dirs:
-                    dst = target / "mods" / rel
-                # overview.md at flow root → copy as index.md to avoid
-                # duplicate "Overview" nav entries
-                elif rel == Path("overview.md"):
-                    dst = target / "index.md"
-                else:
-                    dst = target / rel
-                if _is_stale(src_file, dst):
-                    _copy_with_header(src_file, dst, root)
-                collected.append(str(dst))
+        ctx = CollectContext(
+            entry=entry,
+            flow_dir=flow_dir,
+            target=docs_base / entry.name,
+            root=root,
+            publish=pub_cfg,
+        )
 
-        # --- 2. Publish notebooks ---
-        nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
-        if nb_cfg_path.exists():
-            from pipeio.notebook.config import NotebookConfig
+        # Phase 1: Export — generate artifacts into .build/
+        if export:
+            export_dag(ctx)
+            export_notebooks(ctx)
 
-            try:
-                nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
-                nb_target = target / "notebooks"
-                fmt = nb_cfg.publish.format  # "html" or "myst"
+        # Phase 2: Collect — pure file copying
+        for collector in _COLLECTORS:
+            collected.extend(collector.collect(ctx))
 
-                for nb_entry in nb_cfg.entries:
-                    py_path = flow_dir / nb_entry.path
-                    name = py_path.stem
-
-                    # Use _nb_output_paths for workspace-aware path resolution
-                    from pipeio.notebook.lifecycle import _nb_output_paths
-                    ipynb_path, myst_path = _nb_output_paths(py_path)
-
-                    # Explore notebooks are never published by default
-                    kind = getattr(nb_entry, "kind", "") or ""
-                    if kind in ("investigate", "explore") and not nb_entry.publish_html and not nb_entry.publish_myst:
-                        continue
-
-                    if nb_entry.publish_html or (fmt == "html" and (nb_entry.publish_html or nb_entry.publish_myst)):
-                        if ipynb_path.exists():
-                            nb_target.mkdir(parents=True, exist_ok=True)
-                            out = nb_target / f"{name}.html"
-                            if _is_stale(ipynb_path, out):
-                                _nbconvert_html(ipynb_path, out)
-                            collected.append(str(out))
-
-                    if nb_entry.publish_myst and fmt == "myst":
-                        if myst_path.exists():
-                            nb_target.mkdir(parents=True, exist_ok=True)
-                            out = nb_target / f"{name}.md"
-                            if _is_stale(myst_path, out):
-                                shutil.copy2(myst_path, out)
-                            collected.append(str(out))
-            except Exception:
-                pass
-
-        # Generate notebooks/index.md if notebooks were published
-        nb_target = target / "notebooks"
-        if nb_target.is_dir():
-            nb_files = sorted(
-                f for f in nb_target.iterdir()
-                if f.is_file() and f.suffix in (".html", ".md") and f.name != "index.md"
-            )
-            if nb_files:
-                nb_index = nb_target / "index.md"
-                lines = [_AUTO_GENERATED_HEADER.rstrip(), f"# Notebooks — {entry.name}", ""]
-                for f in nb_files:
-                    title = f.stem.replace("-", " ").replace("_", " ").title()
-                    lines.append(f"- [{title}]({f.name})")
-                lines.append("")
-                nb_index.write_text("\n".join(lines), encoding="utf-8")
-                collected.append(str(nb_index))
-
-        # --- 3. publish.yml artifacts (DAG, report, scripts) ---
-        pub_cfg_path = flow_dir / "publish.yml"
-        if pub_cfg_path.exists():
-            try:
-                pub_cfg = PublishConfig.from_yaml(pub_cfg_path)
-            except Exception:
-                pub_cfg = PublishConfig()
-
-            # DAG: copy dag.svg if present
-            if pub_cfg.dag:
-                dag_src = flow_dir / "dag.svg"
-                if dag_src.exists():
-                    dst = target / "dag.svg"
-                    if _is_stale(dag_src, dst):
-                        target.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(dag_src, dst)
-                    collected.append(str(dst))
-
-            # Report: copy full HTML for local mkdocs serve, plus a
-            # lightweight report.md link page for deployed sites.
-            # docs/pipelines/ is gitignored so the heavy HTML never
-            # reaches the remote — only visible via mkdocs serve.
-            if pub_cfg.report:
-                report_candidates = [
-                    root / "derivatives" / entry.name / "report.html",
-                    flow_dir / "report.html",
-                ]
-                report_src = next((r for r in report_candidates if r.exists()), None)
-                if report_src is not None:
-                    target.mkdir(parents=True, exist_ok=True)
-                    # Copy full HTML for local serving
-                    dst_html = target / "report.html"
-                    if _is_stale(report_src, dst_html):
-                        shutil.copy2(report_src, dst_html)
-                    collected.append(str(dst_html))
-                    # Markdown summary that links to the local copy
-                    dst_md = target / "report.md"
-                    dst_md.write_text(
-                        _AUTO_GENERATED_HEADER +
-                        f"# Report — {entry.name}\n\n"
-                        f"[Open full Snakemake report](report.html)\n",
-                        encoding="utf-8",
-                    )
-                    collected.append(str(dst_md))
-
-            # Scripts: generate script index with git links
-            if pub_cfg.scripts:
-                scripts_dir = flow_dir / "scripts"
-                if scripts_dir.is_dir():
-                    script_files = sorted(scripts_dir.glob("*.py"))
-                    if script_files:
-                        target.mkdir(parents=True, exist_ok=True)
-                        dst = target / "scripts.md"
-                        dst.write_text(
-                            _generate_scripts_index(
-                                entry.name, script_files, flow_dir, root
-                            ),
-                            encoding="utf-8",
-                        )
-                        collected.append(str(dst))
-
-        # --- 4. Generate flow index.md if missing ---
-        flow_index = target / "index.md"
-        if not flow_index.exists():
-            target.mkdir(parents=True, exist_ok=True)
-            flow_index.write_text(
-                _AUTO_GENERATED_HEADER +
-                f"# {entry.name}\n\n"
-                f"Pipeline flow documentation.\n",
-                encoding="utf-8",
-            )
-            collected.append(str(flow_index))
-
-        # --- 5. Auto-generate DAG SVG if not already collected ---
-        dag_dst = target / "dag.svg"
-        if str(dag_dst) not in collected:
-            snakefile = flow_dir / "Snakefile"
-            if snakefile.exists():
-                try:
-                    dag_svg = _generate_dag_svg(root, entry, snakefile)
-                    if dag_svg:
-                        target.mkdir(parents=True, exist_ok=True)
-                        dag_dst.write_text(dag_svg, encoding="utf-8")
-                        collected.append(str(dag_dst))
-                except Exception:
-                    pass  # non-fatal: DAG generation is best-effort
-
-    # --- 6. Write docs/pipelines/mkdocs.yml for monorepo plugin ---
+    # Write docs/pipelines/mkdocs.yml for monorepo plugin
     if collected:
-        nav_yaml = docs_nav(root, write=True)
+        docs_nav(root, write=True)
         sub_mkdocs = docs_base / "mkdocs.yml"
         if sub_mkdocs.exists():
             collected.append(str(sub_mkdocs))
@@ -318,12 +583,20 @@ def docs_collect(root: Path) -> list[str]:
     return collected
 
 
+# ---------------------------------------------------------------------------
+# Staleness helper
+# ---------------------------------------------------------------------------
+
 def _is_stale(src: Path, dst: Path) -> bool:
     """Return True if *dst* is missing or older than *src*."""
     if not dst.exists():
         return True
     return src.stat().st_mtime > dst.stat().st_mtime
 
+
+# ---------------------------------------------------------------------------
+# DAG helpers
+# ---------------------------------------------------------------------------
 
 def _generate_dag_svg(
     root: Path, entry: Any, snakefile: Path,
@@ -375,8 +648,6 @@ def _resolve_snakemake_for_docs() -> list[str]:
         return [binary]
 
     # Try common conda env names
-    import re
-
     for env in ("cogpy", "snakemake"):
         for base in ("/storage/share/python/environments/Anaconda3",):
             for rel in ("condabin/conda", "bin/conda"):
@@ -386,6 +657,10 @@ def _resolve_snakemake_for_docs() -> list[str]:
 
     return ["snakemake"]
 
+
+# ---------------------------------------------------------------------------
+# Nav generation
+# ---------------------------------------------------------------------------
 
 def docs_nav(root: Path, *, write: bool = True) -> str:
     """Generate nav for ``docs/pipelines/`` and optionally write the monorepo sub-mkdocs.yml.
@@ -413,20 +688,14 @@ def docs_nav(root: Path, *, write: bool = True) -> str:
                 {"Overview": str(idx.relative_to(docs_base))}
             )
 
-        # other .md files (excluding index and overview which is used as index)
+        # other .md files (excluding index; overview is included when it
+        # exists as a separate page alongside index.md)
         for md in sorted(flow_dir.glob("*.md")):
-            if md.name in ("index.md", "overview.md"):
+            if md.name == "index.md":
                 continue
             title = md.stem.replace("-", " ").replace("_", " ").title()
             flow_entries.append(
                 {title: str(md.relative_to(docs_base))}
-            )
-
-        # DAG SVG
-        dag = flow_dir / "dag.svg"
-        if dag.exists():
-            flow_entries.append(
-                {"DAG": str(dag.relative_to(docs_base))}
             )
 
         # notebooks subdirectory
@@ -495,7 +764,7 @@ def docs_nav(root: Path, *, write: bool = True) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Other helpers
 # ---------------------------------------------------------------------------
 
 def _generate_scripts_index(

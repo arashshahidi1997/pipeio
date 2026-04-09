@@ -1030,8 +1030,9 @@ def _cmd_docs_collect(args: argparse.Namespace) -> int:
     from pipeio.docs import docs_collect
 
     root = Path(args.root) if args.root else _find_root()
+    export = not getattr(args, "no_export", False)
     try:
-        collected = docs_collect(root)
+        collected = docs_collect(root, export=export)
     except ImportError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1257,7 +1258,8 @@ def main(argv: list[str] | None = None) -> int:
     docs_p = sub.add_parser("docs", help="Pipeline documentation")
     docs_p.add_argument("--root", dest="root", help="Project root")
     docs_sub = docs_p.add_subparsers(dest="docs_command")
-    docs_sub.add_parser("collect", help="Collect flow docs and notebook outputs into docs/pipelines/")
+    docs_collect_p = docs_sub.add_parser("collect", help="Collect flow docs and notebook outputs into docs/pipelines/")
+    docs_collect_p.add_argument("--no-export", action="store_true", help="Skip export phase (DAG/notebook generation); collect pre-built artifacts only")
     docs_sub.add_parser("nav", help="Generate MkDocs nav fragment for pipeline docs")
 
     # pipeio contracts {validate}
