@@ -36,9 +36,9 @@ class TestSimpleResolver:
         resolver = SimpleResolver(cfg, tmp_path)
         p = resolver.resolve("badlabel", "npy", subject="01", session="pre")
         assert "badlabel" in str(p)
-        assert "suffix-ieeg.npy" in str(p)
-        assert "subject-01" in str(p)
-        assert "session-pre" in str(p)
+        assert "ieeg.npy" in str(p)
+        assert "sub-01" in str(p)
+        assert "ses-pre" in str(p)
 
     def test_resolve_unknown_group(self, tmp_path):
         cfg = _sample_flow_config()
@@ -62,10 +62,10 @@ class TestSimpleResolver:
         resolver = SimpleResolver(cfg, tmp_path)
 
         # Create matching files
-        out = tmp_path / "derivatives/preprocess/badlabel/subject-01"
+        out = tmp_path / "derivatives/preprocess/badlabel/sub-01"
         out.mkdir(parents=True)
-        (out / "subject-01_suffix-ieeg.npy").touch()
-        (out / "subject-01_suffix-ieeg.featuremap.png").touch()
+        (out / "sub-01_ieeg.npy").touch()
+        (out / "sub-01_ieeg.featuremap.png").touch()
 
         matches = resolver.expand("badlabel", "npy")
         assert len(matches) == 1
@@ -76,10 +76,10 @@ class TestSimpleResolver:
         resolver = SimpleResolver(cfg, tmp_path)
 
         base = tmp_path / "derivatives/preprocess/badlabel"
-        for subj in ["subject-01", "subject-02"]:
+        for subj in ["sub-01", "sub-02"]:
             d = base / subj
             d.mkdir(parents=True)
-            (d / f"{subj}_suffix-ieeg.npy").touch()
+            (d / f"{subj}_ieeg.npy").touch()
 
         all_matches = resolver.expand("badlabel", "npy")
         assert len(all_matches) == 2
@@ -190,15 +190,15 @@ class TestSession:
         ctx = PipelineContext.from_config(cfg, tmp_path)
         sess = ctx.session(subject="01", session="pre")
         p = sess.get("badlabel", "npy")
-        assert "subject-01" in str(p)
-        assert "session-pre" in str(p)
+        assert "sub-01" in str(p)
+        assert "ses-pre" in str(p)
 
     def test_get_with_override(self, tmp_path):
         cfg = _sample_flow_config()
         ctx = PipelineContext.from_config(cfg, tmp_path)
         sess = ctx.session(subject="01", session="pre")
         p = sess.get("badlabel", "npy", session="post")
-        assert "session-post" in str(p)
+        assert "ses-post" in str(p)
 
     def test_have(self, tmp_path):
         cfg = _sample_flow_config()

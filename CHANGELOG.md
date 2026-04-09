@@ -2,8 +2,22 @@
 
 ## Unreleased
 
+### Added
+- **`mcp_nb_move`** — move a notebook between flows atomically (files + registry update)
+
+### Fixed
+- **`mcp_nb_exec` output placed in `.src/`** — executed notebook now overwrites the workspace `.ipynb` via `_nb_output_paths` instead of creating `_executed.ipynb` inside `.src/`
+- **Duplicate `"flow"` keys** in `mcp_nb_exec` and `mcp_mod_list` return dicts
+- **Stale `papermill_python` reference** in `mcp_nb_exec` error message
+- **Resolver test assertions** — tests used long-form entity names (`subject-01`) instead of BIDS abbreviations (`sub-01`)
+
 ### Changed
+- **Two-phase `docs_collect` architecture** — separated artifact generation (export) from collection. Export phase generates DAG SVGs and notebook HTML into `{flow}/.build/`; collect phase copies pre-built artifacts to `docs/pipelines/`. Collectors (`NotebookCollector`, `DagCollector`) are now pure file copiers — no inline nbconvert or snakemake calls. Pass `export=False` (or `--no-export` CLI flag) to skip generation when artifacts are pre-built.
+- **`.build/` convention** — per-flow build directory (`code/pipelines/{flow}/.build/`) for exported artifacts (DAG SVGs, notebook HTML). Gitignored. MCP tools (`pipeio_dag_export`, `pipeio_nb_publish`) now write to `.build/` in addition to `docs/pipelines/` for immediate visibility.
 - **`docs/pipelines/` is now a build artifact (gitignored)** — source of truth for hand-written docs is `code/pipelines/<flow>/docs/`. Collected files now carry source-path headers (`<!-- DO NOT EDIT — Source: ... -->`). Auto-generated files (index stubs, scripts.md, report.md, notebook index) carry `<!-- AUTO-GENERATED -->` headers. Prevents agents and humans from editing the wrong copy.
+
+### Fixed
+- **`overview.md` silently dropped** — when both `index.md` and `overview.md` existed in a flow's docs, overview content was lost due to an `_is_stale` mtime race. Now: overview.md is used as the flow index only when no source index.md exists; when both exist, both are collected as separate pages.
 - **modkey.bib default output** — changed from `docs/pipelines/modkey.bib` to `.projio/pipeio/modkey.bib` to keep generated files out of `docs_dir` (prevents mkdocs false-positive citation warnings)
 
 ### Added (conventions)

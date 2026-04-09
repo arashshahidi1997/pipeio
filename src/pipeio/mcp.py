@@ -766,6 +766,156 @@ def mcp_nb_update(
     }
 
 
+def mcp_nb_move(
+    root: Path,
+    flow_from: str,
+    flow_to: str,
+    name: str,
+    kind: str = "",
+) -> dict[str, Any]:
+    """Move a notebook from one flow to another.
+
+    Moves the ``.py`` source, paired ``.ipynb``, and ``.myst`` files.
+    Updates ``notebook.yml`` in both source and target flows.
+
+    Args:
+        root: Project root.
+        flow_from: Source flow name.
+        flow_to: Destination flow name.
+        name: Notebook basename (without extension).
+        kind: Override workspace kind (investigate/explore/demo/validate).
+              Defaults to the notebook's existing kind from notebook.yml.
+    """
+    import shutil
+
+    import yaml
+    from pipeio.notebook.config import NotebookConfig, NotebookEntry
+    from pipeio.notebook.lifecycle import _nb_output_paths
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+
+    # Resolve both flows
+    try:
+        entry_from = registry.get(flow_from)
+    except (KeyError, ValueError) as exc:
+        return {"error": f"Source flow: {exc}"}
+    try:
+        entry_to = registry.get(flow_to)
+    except (KeyError, ValueError) as exc:
+        return {"error": f"Target flow: {exc}"}
+
+    from_dir = Path(entry_from.code_path)
+    if not from_dir.is_absolute():
+        from_dir = root / from_dir
+    to_dir = Path(entry_to.code_path)
+    if not to_dir.is_absolute():
+        to_dir = root / to_dir
+
+    # Find source notebook
+    py_path = _resolve_nb_path(from_dir, name)
+    if py_path is None:
+        return {"error": f"Notebook {name!r} not found in flow {flow_from!r}"}
+
+    # Load source notebook.yml and find the entry
+    from_nb_cfg_path = from_dir / "notebooks" / "notebook.yml"
+    if not from_nb_cfg_path.exists():
+        return {"error": f"No notebook.yml in source flow {flow_from!r}"}
+
+    from_nb_cfg = NotebookConfig.from_yaml(from_nb_cfg_path)
+    source_entry = None
+    source_idx = None
+    for idx, nb in enumerate(from_nb_cfg.entries):
+        if Path(nb.path).stem == name:
+            source_entry = nb
+            source_idx = idx
+            break
+    if source_entry is None:
+        return {"error": f"Notebook {name!r} not in {flow_from} notebook.yml"}
+
+    # Determine target workspace kind
+    effective_kind = kind or source_entry.kind or "investigate"
+    _EXPLORE_KINDS = {"investigate", "explore"}
+    _DEMO_KINDS = {"demo", "validate"}
+    if effective_kind in _EXPLORE_KINDS:
+        workspace = "explore"
+    elif effective_kind in _DEMO_KINDS:
+        workspace = "demo"
+    else:
+        workspace = ""
+
+    # Build target paths
+    to_nb_dir = to_dir / "notebooks"
+    if workspace:
+        to_src_dir = to_nb_dir / workspace / ".src"
+    else:
+        to_src_dir = to_nb_dir / ".src"
+
+    to_py_path = to_src_dir / f"{name}.py"
+    if to_py_path.exists():
+        return {"error": f"Notebook {name!r} already exists in flow {flow_to!r}"}
+
+    # Compute all source file paths
+    src_ipynb, src_myst = _nb_output_paths(py_path)
+
+    to_src_dir.mkdir(parents=True, exist_ok=True)
+    to_ipynb, to_myst = _nb_output_paths(to_py_path)
+
+    # Move files
+    moved_files: list[str] = []
+
+    shutil.move(str(py_path), str(to_py_path))
+    moved_files.append(str(to_py_path.relative_to(root)))
+
+    if src_ipynb.exists():
+        to_ipynb.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src_ipynb), str(to_ipynb))
+        moved_files.append(str(to_ipynb.relative_to(root)))
+
+    if src_myst.exists():
+        to_myst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src_myst), str(to_myst))
+        moved_files.append(str(to_myst.relative_to(root)))
+
+    # Update source notebook.yml — remove entry
+    from_nb_cfg.entries.pop(source_idx)
+    from_nb_cfg_path.write_text(
+        yaml.dump(from_nb_cfg.model_dump(), sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    # Update target notebook.yml — add entry with new path
+    to_nb_cfg_path = to_nb_dir / "notebook.yml"
+    if to_nb_cfg_path.exists():
+        to_nb_cfg = NotebookConfig.from_yaml(to_nb_cfg_path)
+    else:
+        to_nb_dir.mkdir(parents=True, exist_ok=True)
+        to_nb_cfg = NotebookConfig()
+
+    new_entry = source_entry.model_copy()
+    new_entry.path = str(to_py_path.relative_to(to_nb_dir))
+    if kind:
+        new_entry.kind = kind
+    to_nb_cfg.entries.append(new_entry)
+    to_nb_cfg_path.write_text(
+        yaml.dump(to_nb_cfg.model_dump(), sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    return {
+        "status": "ok",
+        "name": name,
+        "flow_from": entry_from.name,
+        "flow_to": entry_to.name,
+        "kind": effective_kind,
+        "moved_files": moved_files,
+    }
+
+
 def mcp_mod_list(root: Path, flow: str | None = None) -> dict[str, Any]:
     """List mods for a specific flow."""
     from pipeio.registry import PipelineRegistry
@@ -781,7 +931,6 @@ def mcp_mod_list(root: Path, flow: str | None = None) -> dict[str, Any]:
         return {"error": str(exc)}
 
     return {
-        "flow": entry.name,
         "flow": entry.name,
         "mods": {name: mod.model_dump() for name, mod in entry.mods.items()},
     }
@@ -2064,12 +2213,19 @@ def mcp_nb_publish(
     elif format == "html":
         publish_myst, publish_html = False, True
 
+    # Write to .build/ (for docs_collect pipeline) and docs/ (for immediate visibility)
+    build_dir = flow_dir / ".build" / "notebooks"
+    build_dir.mkdir(parents=True, exist_ok=True)
     dest_dir = root / "docs" / "pipelines" / flow / "notebooks"
     dest_dir.mkdir(parents=True, exist_ok=True)
     published: list[str] = []
 
     if publish_myst:
         if myst_path.exists():
+            # Export to .build/
+            build_dest = build_dir / f"nb-{name}.md"
+            shutil.copy2(myst_path, build_dest)
+            # Also write to docs/ for immediate visibility
             dest = dest_dir / f"nb-{name}.md"
             shutil.copy2(myst_path, dest)
             try:
@@ -2084,8 +2240,12 @@ def mcp_nb_publish(
 
     if publish_html:
         if ipynb_path.exists():
+            # Export to .build/
+            build_dest = build_dir / f"nb-{name}.html"
+            _nbconvert_html(ipynb_path, build_dest)
+            # Also write to docs/ for immediate visibility
             dest = dest_dir / f"nb-{name}.html"
-            _nbconvert_html(ipynb_path, dest)
+            shutil.copy2(build_dest, dest)
             try:
                 published.append(str(dest.relative_to(root)))
             except ValueError:
@@ -4365,7 +4525,8 @@ def mcp_nb_exec(
     if py_path is None:
         return {"error": f"Notebook not found: {name}"}
 
-    ipynb_path = py_path.with_suffix(".ipynb")
+    from pipeio.notebook.lifecycle import _nb_output_paths
+    ipynb_path, _ = _nb_output_paths(py_path)
 
     # Resolve kernel from notebook.yml
     kernel = ""
@@ -4400,7 +4561,7 @@ def mcp_nb_exec(
             ),
         }
 
-    output_path = ipynb_path.with_name(f"{name}_executed.ipynb")
+    output_path = ipynb_path  # overwrite workspace .ipynb in-place
     cmd = [server_python, "-m", "papermill", str(ipynb_path), str(output_path),
            "--cwd", str(flow_dir)]
     if kernel:
@@ -4429,12 +4590,11 @@ def mcp_nb_exec(
             "status": "timeout",
             "elapsed_seconds": elapsed,
             "timeout": timeout,
-            "flow": flow,
             "flow": entry.name,
             "name": name,
         }
     except FileNotFoundError:
-        return {"error": f"Python binary not found: {papermill_python}"}
+        return {"error": f"Python binary not found: {server_python}"}
 
     try:
         output_rel = str(output_path.relative_to(root))
@@ -4447,7 +4607,6 @@ def mcp_nb_exec(
             "elapsed_seconds": elapsed,
             "output_path": output_rel,
             "stderr": result.stderr[-2000:] if result.stderr else "",
-            "flow": flow,
             "flow": entry.name,
             "name": name,
         }
@@ -4456,7 +4615,6 @@ def mcp_nb_exec(
         "status": "ok",
         "elapsed_seconds": elapsed,
         "output_path": output_rel,
-        "flow": flow,
         "flow": entry.name,
         "name": name,
         "params_injected": list(params.keys()) if params else [],
@@ -4567,9 +4725,17 @@ def mcp_dag_export(
 
     actual_format = "json" if graph_type == "d3dag" else output_format
 
-    # SVG → auto-write to docs/pipelines/<flow>/dag.svg
+    # SVG → write to .build/ (for docs_collect) and docs/ (for immediate visibility)
     written_path = None
     if output_format == "svg":
+        flow_dir = Path(entry.code_path)
+        if not flow_dir.is_absolute():
+            flow_dir = root / flow_dir
+        # Export to .build/ for docs_collect pipeline
+        build_out = flow_dir / ".build" / "dag.svg"
+        build_out.parent.mkdir(parents=True, exist_ok=True)
+        build_out.write_text(graph_output, encoding="utf-8")
+        # Also write to docs/ for immediate visibility
         out = root / "docs" / "pipelines" / entry.name / "dag.svg"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(graph_output, encoding="utf-8")
@@ -5315,8 +5481,8 @@ def mcp_run(
             ``["conda", "run", "-n", "cogpy", "snakemake"]``).
             Defaults to ``["snakemake"]``.
         wildcards: Entity filters for scoping runs (e.g.
-            ``{"subject": "01", "session": "04"}``).  Maps to
-            snakebids ``--filter-{key} {value}`` CLI flags.
+            ``{"subject": "01", "session": "04"}``).  Passed as
+            ``--config key=value`` overrides to Snakemake.
     """
     import json
     import shutil
@@ -5368,11 +5534,11 @@ def mcp_run(
         snake_cmd.extend(targets)
     if wildcards:
         for key, value in wildcards.items():
-            snake_cmd.extend([f"--filter-{key}", str(value)])
+            snake_cmd.extend(["--config", f"{key}={value}"])
     if extra_args:
         snake_cmd.extend(extra_args)
 
-    screen_name = f"pipeio-{entry.name}-{entry.name}-{run_id}"
+    screen_name = f"pipeio-{entry.name}-{run_id}"
     # Use stdbuf to force line-buffered stdout so log is visible during
     # long-running steps (e.g. BIDS indexing under conda run).
     stdbuf_prefix = "stdbuf -oL " if shutil.which("stdbuf") else ""
@@ -5393,7 +5559,6 @@ def mcp_run(
     run_record = {
         "id": run_id,
         "flow": entry.name,
-        "flow": entry.name,
         "screen": screen_name,
         "log_path": str(log_path.relative_to(root)),
         "started_at": timestamp,
@@ -5409,7 +5574,6 @@ def mcp_run(
         "run_id": run_id,
         "screen": screen_name,
         "log_path": str(log_path.relative_to(root)),
-        "flow": entry.name,
         "flow": entry.name,
         "dryrun": dryrun,
     }
@@ -5427,7 +5591,6 @@ def mcp_run_status(
     Args:
         root: Project root.
         run_id: Specific run ID to query (optional).
-        pipe: Filter by pipeline (optional).
         flow: Filter by flow (optional).
     """
     import subprocess
@@ -5439,8 +5602,6 @@ def mcp_run_status(
     # Filter
     if run_id:
         runs = [r for r in runs if r["id"] == run_id]
-    if pipe:
-        runs = [r for r in runs if r.get("flow") == flow]
     if flow:
         runs = [r for r in runs if r.get("flow") == flow]
 
