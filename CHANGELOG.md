@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`mcp_nb_report`** — extract figures, markdown, and text outputs from an executed notebook; backend-aware (percent via nbconvert, marimo via `marimo export md`); detects interactive HTML widgets (holoviews, bokeh, plotly) and returns `html_outputs` with remediation hints; saves extracted figures to `{flow}/docs/reports/{name}/`
 - **`mcp_nb_move`** — move a notebook between flows atomically (files + registry update)
 
 ### Fixed
