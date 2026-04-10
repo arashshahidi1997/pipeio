@@ -2,6 +2,8 @@
 
 Requires ``pipeio[notebook]`` (jupytext, nbconvert) for pair/sync/exec/publish.
 Status works without any optional dependencies.
+
+Supports multiple notebook backends via :mod:`pipeio.notebook.backend`.
 """
 
 from __future__ import annotations
@@ -33,7 +35,10 @@ def find_notebook_configs(root: Path) -> list[tuple[Path, Any]]:
 
 
 def _is_percent_format(py_path: Path) -> bool:
-    """Return True if *py_path* looks like a jupytext percent-format notebook."""
+    """Return True if *py_path* looks like a jupytext percent-format notebook.
+
+    .. deprecated:: Use :func:`pipeio.notebook.backend.detect_format` instead.
+    """
     try:
         head = py_path.read_text(encoding="utf-8", errors="ignore")[:4096]
         return "# %%" in head
@@ -41,11 +46,25 @@ def _is_percent_format(py_path: Path) -> bool:
         return False
 
 
+def _is_notebook(py_path: Path) -> bool:
+    """Return True if *py_path* is a notebook in any supported format."""
+    from pipeio.notebook.backend import _init_backends, _BACKENDS
+    _init_backends()
+    return any(b.detect(py_path) for b in _BACKENDS.values())
+
+
+def _resolve_entry_backend(entry: Any, py_path: Path) -> Any:
+    """Resolve the backend for a notebook entry."""
+    from pipeio.notebook.backend import resolve_backend
+    fmt = getattr(entry, "format", "") or ""
+    return resolve_backend(fmt, py_path)
+
+
 def nb_scan(root: Path, *, register: bool = False) -> list[dict[str, Any]]:
-    """Scan for percent-format .py notebooks and compare against notebook.yml.
+    """Scan for notebook ``.py`` files (any supported format) and compare against notebook.yml.
 
     Walks every ``notebooks/`` directory under *root*, finds ``.py`` files
-    containing ``# %%`` cell markers, and checks whether they are registered
+    recognised by any registered backend, and checks whether they are registered
     in the corresponding ``notebook.yml``.
 
     Parameters
@@ -54,14 +73,16 @@ def nb_scan(root: Path, *, register: bool = False) -> list[dict[str, Any]]:
         Project root.
     register : bool
         If True, auto-register unregistered notebooks into ``notebook.yml``
-        with sensible defaults (pair_ipynb=True, pair_myst=True, status=draft).
+        with sensible defaults (pair_ipynb=True, pair_myst=True, status=draft
+        for percent-format; format=marimo for marimo-format).
 
     Returns
     -------
     List of dicts, one per discovered notebook:
         ``name``, ``py_path``, ``flow_root``, ``registered`` (bool),
-        ``newly_registered`` (bool, only when register=True).
+        ``format`` (str), ``newly_registered`` (bool, only when register=True).
     """
+    from pipeio.notebook.backend import detect_format
     from pipeio.notebook.config import NotebookConfig, NotebookEntry
 
     results: list[dict[str, Any]] = []
@@ -69,20 +90,15 @@ def nb_scan(root: Path, *, register: bool = False) -> list[dict[str, Any]]:
     # Find all notebooks/ directories
     seen_nb_dirs: set[Path] = set()
     for py_file in sorted(root.rglob("notebooks/*.py")):
-        if not _is_percent_format(py_file):
+        if not _is_notebook(py_file):
             continue
         nb_dir = py_file.parent
-        flow_root = nb_dir.parent
         seen_nb_dirs.add(nb_dir)
-
-        # Also check subdirectory pattern: notebooks/<name>/<name>.py
-        # (already caught by the glob)
 
     # Also check notebooks/<subdir>/<name>.py pattern
     for py_file in sorted(root.rglob("notebooks/**/*.py")):
-        if not _is_percent_format(py_file):
+        if not _is_notebook(py_file):
             continue
-        # flow_root is the parent of the notebooks/ dir
         nb_dir_candidate = py_file.parent
         while nb_dir_candidate.name != "notebooks" and nb_dir_candidate != root:
             nb_dir_candidate = nb_dir_candidate.parent
@@ -112,9 +128,11 @@ def nb_scan(root: Path, *, register: bool = False) -> list[dict[str, Any]]:
 
         # Scan .py files in this notebooks/ dir (flat and nested)
         for py_file in sorted(nb_dir.rglob("*.py")):
-            if not _is_percent_format(py_file) or py_file in processed_files:
+            if not _is_notebook(py_file) or py_file in processed_files:
                 continue
             processed_files.add(py_file)
+
+            fmt = detect_format(py_file)
 
             try:
                 rel_path = str(py_file.relative_to(flow_root))
@@ -130,6 +148,7 @@ def nb_scan(root: Path, *, register: bool = False) -> list[dict[str, Any]]:
                 "rel_path": rel_path,
                 "flow_root": str(flow_root),
                 "registered": is_registered,
+                "format": fmt,
             }
 
             if not is_registered and register:
@@ -138,13 +157,21 @@ def nb_scan(root: Path, *, register: bool = False) -> list[dict[str, Any]]:
                     src_rel = rel_path.replace("notebooks/", "notebooks/.src/", 1)
                 else:
                     src_rel = rel_path
-                new_entry = NotebookEntry(
-                    path=src_rel if ".src" in src_rel else rel_path,
-                    status="draft",
-                    pair_ipynb=True,
-                    pair_myst=True,
-                    publish_myst=True,
-                )
+
+                if fmt == "marimo":
+                    new_entry = NotebookEntry(
+                        path=src_rel if ".src" in src_rel else rel_path,
+                        format="marimo",
+                        status="draft",
+                    )
+                else:
+                    new_entry = NotebookEntry(
+                        path=src_rel if ".src" in src_rel else rel_path,
+                        status="draft",
+                        pair_ipynb=True,
+                        pair_myst=True,
+                        publish_myst=True,
+                    )
                 cfg.entries.append(new_entry)
                 modified = True
                 entry_info["newly_registered"] = True
@@ -165,7 +192,7 @@ def nb_status(root: Path) -> list[dict[str, Any]]:
     """Return status records for every notebook under *root*.
 
     Each record has keys:
-    ``name``, ``flow_root``, ``py_exists``, ``ipynb_exists``,
+    ``name``, ``flow_root``, ``format``, ``py_exists``, ``ipynb_exists``,
     ``myst_exists``, ``synced``, ``executed``.
     """
     statuses: list[dict[str, Any]] = []
@@ -173,19 +200,26 @@ def nb_status(root: Path) -> list[dict[str, Any]]:
     for flow_root, cfg in find_notebook_configs(root):
         for entry in cfg.entries:
             py_path = flow_root / entry.path
-            _ipynb, _myst = _nb_output_paths(py_path)
-            ipynb_path = _ipynb if entry.pair_ipynb else None
-            myst_path = _myst if entry.pair_myst else None
+            backend = _resolve_entry_backend(entry, py_path)
+            fmt = backend.name
+            out = backend.output_paths(py_path)
 
-            synced = True
-            if py_path.exists():
-                py_mtime = py_path.stat().st_mtime
-                if ipynb_path is not None:
-                    synced = synced and (ipynb_path.exists() and ipynb_path.stat().st_mtime >= py_mtime)
-                if myst_path is not None:
-                    synced = synced and (myst_path.exists() and myst_path.stat().st_mtime >= py_mtime)
+            ipynb_path = out.get("ipynb") if entry.pair_ipynb else None
+            myst_path = out.get("myst") if entry.pair_myst else None
+
+            # Marimo notebooks are always "synced" (single-file format)
+            if fmt == "marimo":
+                synced = py_path.exists()
             else:
-                synced = False
+                synced = True
+                if py_path.exists():
+                    py_mtime = py_path.stat().st_mtime
+                    if ipynb_path is not None:
+                        synced = synced and (ipynb_path.exists() and ipynb_path.stat().st_mtime >= py_mtime)
+                    if myst_path is not None:
+                        synced = synced and (myst_path.exists() and myst_path.stat().st_mtime >= py_mtime)
+                else:
+                    synced = False
 
             executed = False
             if ipynb_path is not None and ipynb_path.exists():
@@ -202,6 +236,7 @@ def nb_status(root: Path) -> list[dict[str, Any]]:
             statuses.append({
                 "name": py_path.stem,
                 "flow_root": str(flow_root),
+                "format": fmt,
                 "py_exists": py_path.exists(),
                 "ipynb_exists": ipynb_path.exists() if ipynb_path is not None else None,
                 "myst_exists": myst_path.exists() if myst_path is not None else None,
@@ -227,18 +262,23 @@ def nb_pair(root: Path, *, force: bool = False) -> list[str]:
 
     for flow_root, cfg in find_notebook_configs(root):
         for entry in cfg.entries:
+            backend = _resolve_entry_backend(entry, flow_root / entry.path)
+            if backend.name != "percent":
+                continue  # only percent-format needs pairing
             py_path = flow_root / entry.path
             if not py_path.exists():
                 continue
 
-            ipynb_path, myst_path = _nb_output_paths(py_path)
+            out = backend.output_paths(py_path)
+            ipynb_path = out.get("ipynb")
+            myst_path = out.get("myst")
 
-            if entry.pair_ipynb:
+            if entry.pair_ipynb and ipynb_path:
                 if force or not ipynb_path.exists():
                     _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path))
                     created.append(str(ipynb_path))
 
-            if entry.pair_myst:
+            if entry.pair_myst and myst_path:
                 myst_path.parent.mkdir(parents=True, exist_ok=True)
                 if force or not myst_path.exists():
                     _jupytext(py_path, "--to", "myst", "--output", str(myst_path))
@@ -261,19 +301,24 @@ def nb_sync(root: Path) -> list[str]:
 
     for flow_root, cfg in find_notebook_configs(root):
         for entry in cfg.entries:
+            backend = _resolve_entry_backend(entry, flow_root / entry.path)
+            if backend.name != "percent":
+                continue  # only percent-format needs sync
             py_path = flow_root / entry.path
             if not py_path.exists():
                 continue
             py_mtime = py_path.stat().st_mtime
 
-            ipynb_path, myst_path = _nb_output_paths(py_path)
+            out = backend.output_paths(py_path)
+            ipynb_path = out.get("ipynb")
+            myst_path = out.get("myst")
 
-            if entry.pair_ipynb:
+            if entry.pair_ipynb and ipynb_path:
                 if ipynb_path.exists() and ipynb_path.stat().st_mtime < py_mtime:
                     _jupytext(py_path, "--to", "notebook", "--output", str(ipynb_path))
                     updated.append(str(ipynb_path))
 
-            if entry.pair_myst:
+            if entry.pair_myst and myst_path:
                 myst_path.parent.mkdir(parents=True, exist_ok=True)
                 if myst_path.exists() and myst_path.stat().st_mtime < py_mtime:
                     _jupytext(py_path, "--to", "myst", "--output", str(myst_path))
@@ -296,11 +341,15 @@ def nb_exec(root: Path) -> list[str]:
 
     for flow_root, cfg in find_notebook_configs(root):
         for entry in cfg.entries:
+            backend = _resolve_entry_backend(entry, flow_root / entry.path)
+            if backend.name != "percent":
+                continue  # marimo uses backend.execute() via MCP
             if not entry.pair_ipynb:
                 continue
             py_path = flow_root / entry.path
-            ipynb_path, _ = _nb_output_paths(py_path)
-            if not ipynb_path.exists():
+            out = backend.output_paths(py_path)
+            ipynb_path = out.get("ipynb")
+            if ipynb_path is None or not ipynb_path.exists():
                 continue
             _nbconvert_exec(ipynb_path)
             executed.append(str(ipynb_path))
@@ -331,21 +380,36 @@ def nb_publish(root: Path) -> list[str]:
         for entry in cfg.entries:
             py_path = flow_root / entry.path
             name = py_path.stem
-            ipynb_path, myst_path = _nb_output_paths(py_path)
+            backend = _resolve_entry_backend(entry, py_path)
+            out_paths = backend.output_paths(py_path)
 
             if entry.publish_html:
-                _require_nbconvert()
-                if ipynb_path.exists():
+                if backend.name == "percent":
+                    _require_nbconvert()
+                    ipynb_path = out_paths.get("ipynb")
+                    if ipynb_path and ipynb_path.exists():
+                        out = docs_dir / f"{cfg.publish.prefix}{name}.html"
+                        _nbconvert_html(ipynb_path, out)
+                        published.append(str(out))
+                elif backend.name == "marimo":
                     out = docs_dir / f"{cfg.publish.prefix}{name}.html"
-                    _nbconvert_html(ipynb_path, out)
-                    published.append(str(out))
+                    result = backend.export(py_path, output_format="html", output_path=out)
+                    if result.get("exported"):
+                        published.append(str(out))
 
             if entry.publish_myst:
-                _require_jupytext()
-                if myst_path.exists():
+                if backend.name == "percent":
+                    _require_jupytext()
+                    myst_path = out_paths.get("myst")
+                    if myst_path and myst_path.exists():
+                        out = docs_dir / f"{cfg.publish.prefix}{name}.md"
+                        shutil.copy2(myst_path, out)
+                        published.append(str(out))
+                elif backend.name == "marimo":
                     out = docs_dir / f"{cfg.publish.prefix}{name}.md"
-                    shutil.copy2(myst_path, out)
-                    published.append(str(out))
+                    result = backend.export(py_path, output_format="markdown", output_path=out)
+                    if result.get("exported"):
+                        published.append(str(out))
 
     return published
 
@@ -362,13 +426,18 @@ def nb_sync_one(
     force: bool = False,
     kernel: str = "",
     python_bin: "str | list[str] | None" = None,
+    format_hint: str = "",
 ) -> dict[str, Any]:
     """Sync a single notebook, optionally in either direction.
+
+    Dispatches to the appropriate backend based on *format_hint* or
+    auto-detection.  For marimo-format notebooks, sync is a no-op
+    (single-file format).
 
     Parameters
     ----------
     py_path : Path
-        The percent-format ``.py`` source file.
+        The ``.py`` source file.
     direction : str
         ``"py2nb"`` (default) — regenerate ``.ipynb`` / ``.md`` from ``.py``.
         ``"nb2py"`` — update ``.py`` from the paired ``.ipynb``.
@@ -382,23 +451,25 @@ def nb_sync_one(
         Passed as ``--set-kernel`` to jupytext.  Empty string = no override.
     python_bin : str | None
         Python binary where jupytext is installed (optional).
+    format_hint : str
+        Explicit format (``"percent"``, ``"marimo"``, or ``""`` for auto-detect).
 
     Returns
     -------
     dict with keys: synced (bool), source, generated/updated (list[str]),
     direction, skipped (bool if nothing needed).
     """
-    if formats is None:
-        formats = ["ipynb", "myst"]
+    from pipeio.notebook.backend import resolve_backend
+    backend = resolve_backend(format_hint, py_path)
 
-    _require_jupytext(python_bin=python_bin)
-
-    if direction == "nb2py":
-        return _sync_nb2py(py_path, force=force, python_bin=python_bin)
-    elif direction == "py2nb":
-        return _sync_py2nb(py_path, formats=formats, force=force, kernel=kernel, python_bin=python_bin)
-    else:
-        return {"error": f"Unknown direction: {direction!r}. Use 'py2nb' or 'nb2py'."}
+    return backend.sync(
+        py_path,
+        direction=direction,
+        formats=formats,
+        force=force,
+        kernel=kernel,
+        python_bin=python_bin,
+    )
 
 
 def _nb_output_paths(py_path: Path) -> tuple[Path, Path]:
@@ -503,19 +574,36 @@ def _sync_nb2py(
 # Single-notebook diff (change detection)
 # ---------------------------------------------------------------------------
 
-def nb_diff(py_path: Path) -> dict[str, Any]:
+def nb_diff(py_path: Path, *, format_hint: str = "") -> dict[str, Any]:
     """Compare sync state between ``.py`` and its paired ``.ipynb``.
+
+    For marimo-format notebooks, always returns ``"synced"`` (single-file format).
 
     Returns a dict describing which file is newer, whether they're in sync,
     and the recommended sync direction.
     """
-    ipynb_path, _ = _nb_output_paths(py_path)
+    from pipeio.notebook.backend import resolve_backend
+    backend = resolve_backend(format_hint, py_path)
+
+    # Marimo is single-file — always synced
+    if backend.name == "marimo":
+        return {
+            "py_path": str(py_path),
+            "py_exists": py_path.exists(),
+            "format": "marimo",
+            "status": "synced" if py_path.exists() else "missing",
+            "recommendation": "Marimo notebooks are single-file (no sync needed)",
+        }
+
+    out = backend.output_paths(py_path)
+    ipynb_path = out.get("ipynb", py_path.with_suffix(".ipynb"))
 
     result: dict[str, Any] = {
         "py_path": str(py_path),
         "ipynb_path": str(ipynb_path),
         "py_exists": py_path.exists(),
         "ipynb_exists": ipynb_path.exists(),
+        "format": "percent",
     }
 
     if not py_path.exists() and not ipynb_path.exists():
@@ -538,8 +626,6 @@ def nb_diff(py_path: Path) -> dict[str, Any]:
     result["py_mtime"] = py_mtime
     result["ipynb_mtime"] = ipynb_mtime
 
-    # Use 2-second tolerance to avoid mtime race from jupytext
-    # (jupytext writes .ipynb then touches .py metadata, creating a small gap)
     _MTIME_TOLERANCE = 2.0
 
     if py_mtime - ipynb_mtime > _MTIME_TOLERANCE:
@@ -554,7 +640,6 @@ def nb_diff(py_path: Path) -> dict[str, Any]:
         result["status"] = "synced"
         result["recommendation"] = "Files are in sync"
 
-    # Check if ipynb has execution outputs
     if ipynb_path.exists():
         try:
             nb_data = json.loads(ipynb_path.read_text(encoding="utf-8"))
@@ -575,8 +660,8 @@ def nb_diff(py_path: Path) -> dict[str, Any]:
 # Lab manifest (symlink workspace for Jupyter Lab)
 # ---------------------------------------------------------------------------
 
-def nb_read(py_path: Path) -> dict[str, Any]:
-    """Read a percent-format notebook and return content + metadata.
+def nb_read(py_path: Path, *, format_hint: str = "") -> dict[str, Any]:
+    """Read a notebook and return content + metadata.
 
     Returns the ``.py`` source content alongside structured metadata
     (sections, imports, sync state) in a single call.
@@ -584,21 +669,25 @@ def nb_read(py_path: Path) -> dict[str, Any]:
     if not py_path.exists():
         return {"error": f"Notebook not found: {py_path}"}
 
+    from pipeio.notebook.backend import resolve_backend
+    backend = resolve_backend(format_hint, py_path)
+
     content = py_path.read_text(encoding="utf-8")
     result: dict[str, Any] = {
         "path": str(py_path),
         "name": py_path.stem,
+        "format": backend.name,
         "content": content,
         "lines": content.count("\n") + 1,
     }
 
     # Add sync state
-    result["sync"] = nb_diff(py_path)
+    result["sync"] = nb_diff(py_path, format_hint=format_hint)
 
     # Add structural analysis if available
     try:
         from pipeio.notebook.analyze import analyze_notebook
-        analysis = analyze_notebook(py_path)
+        analysis = analyze_notebook(py_path, backend=backend)
         result["sections"] = analysis.get("sections", [])
         result["imports"] = analysis.get("imports", [])
         result["run_card"] = analysis.get("run_card", [])
@@ -667,10 +756,13 @@ def nb_audit(root: Path, registered_only: bool = True) -> list[dict[str, Any]]:
 
         for entry in cfg.entries:
             py_path = flow_root / entry.path
+            backend = _resolve_entry_backend(entry, py_path)
+            fmt = backend.name
             kernel = cfg.resolve_kernel(entry)
             record: dict[str, Any] = {
                 "name": py_path.stem,
                 "flow_root": str(flow_root),
+                "format": fmt,
                 "status": entry.status,
                 "kind": entry.kind,
                 "mod": entry.mod,
@@ -687,30 +779,34 @@ def nb_audit(root: Path, registered_only: bool = True) -> list[dict[str, Any]]:
             else:
                 record["lines"] = py_path.read_text(encoding="utf-8").count("\n") + 1
 
-            # Check pairing config
-            if not entry.pair_ipynb:
-                record["issues"].append("pair_ipynb_disabled")
+            # Format-specific pairing/sync checks
+            if fmt == "percent":
+                if not entry.pair_ipynb:
+                    record["issues"].append("pair_ipynb_disabled")
 
-            # Check sync state
-            if py_path.exists():
-                diff = nb_diff(py_path)
-                record["sync_status"] = diff.get("status", "unknown")
-                if diff.get("status") == "ipynb_newer":
-                    record["issues"].append("ipynb_has_unsynced_edits")
-                elif diff.get("status") == "py_newer":
-                    record["issues"].append("ipynb_stale")
-                elif diff.get("status") == "unpaired":
-                    record["issues"].append("ipynb_missing")
-                record["executed"] = diff.get("executed", False)
+                if py_path.exists():
+                    diff = nb_diff(py_path, format_hint=fmt)
+                    record["sync_status"] = diff.get("status", "unknown")
+                    if diff.get("status") == "ipynb_newer":
+                        record["issues"].append("ipynb_has_unsynced_edits")
+                    elif diff.get("status") == "py_newer":
+                        record["issues"].append("ipynb_stale")
+                    elif diff.get("status") == "unpaired":
+                        record["issues"].append("ipynb_missing")
+                    record["executed"] = diff.get("executed", False)
+            elif fmt == "marimo":
+                # Marimo: single-file, always synced
+                record["sync_status"] = "synced"
+                record["executed"] = None  # not tracked for marimo
 
             # Check metadata completeness
             if not entry.description:
                 record["issues"].append("no_description")
             if not entry.kind:
                 record["issues"].append("no_kind")
-            if not kernel:
+            if not kernel and fmt == "percent":
                 record["issues"].append("no_kernel")
-            if not entry.mod:
+            if not entry.mod and entry.kind not in ("interactive",):
                 record["issues"].append("no_mod")
 
             # Status quality
@@ -722,12 +818,14 @@ def nb_audit(root: Path, registered_only: bool = True) -> list[dict[str, Any]]:
             # Lifecycle mismatch checks
             is_exploratory = entry.kind in ("investigate", "explore")
             is_demo = entry.kind in ("demo", "validate")
+            is_interactive = entry.kind == "interactive"
 
-            # Demo notebook should have publish_html enabled
-            if is_demo and not entry.publish_html:
+            # Demo notebook should have publish_html enabled (percent-only)
+            if is_demo and fmt == "percent" and not entry.publish_html:
                 record["issues"].append("demo_not_publishable")
 
             # Exploratory notebook still active but mod already has scripts
+            # (interactive notebooks are exempt — they persist by design)
             if is_exploratory and entry.status == "active" and entry.mod:
                 if entry.mod in flow_mods:
                     record["issues"].append("explore_absorbed_not_archived")
@@ -736,8 +834,8 @@ def nb_audit(root: Path, registered_only: bool = True) -> list[dict[str, Any]]:
             if is_demo and entry.status == "active" and record.get("executed"):
                 record["issues"].append("demo_executed_not_promoted")
 
-            # Promoted notebook without publish_html
-            if entry.status == "promoted" and not entry.publish_html:
+            # Promoted notebook without publish_html (percent-only)
+            if entry.status == "promoted" and fmt == "percent" and not entry.publish_html:
                 record["issues"].append("promoted_not_publishable")
 
             # Archived notebook still has publish_html on
@@ -920,12 +1018,18 @@ def nb_lab(
             continue
 
         for entry in cfg.entries:
-            # Only link active notebooks with ipynb pairing
+            # Only link active percent-format notebooks with ipynb pairing
+            backend = _resolve_entry_backend(entry, flow_root / entry.path)
+            if backend.name != "percent":
+                continue  # marimo notebooks don't have .ipynb
             if entry.status not in ("active", "draft") or not entry.pair_ipynb:
                 continue
 
             py_path = flow_root / entry.path
-            ipynb_path, _ = _nb_output_paths(py_path)
+            out = backend.output_paths(py_path)
+            ipynb_path = out.get("ipynb")
+            if ipynb_path is None:
+                continue
             kernel = cfg.resolve_kernel(entry)
 
             # Optionally sync first (with kernel embedded)

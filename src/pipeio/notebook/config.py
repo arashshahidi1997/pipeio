@@ -12,10 +12,11 @@ class NotebookEntry(BaseModel):
     """A single notebook entry in ``notebook.yml``."""
 
     path: str
-    kind: str = ""
+    kind: str = ""  # investigate | explore | demo | validate | interactive
     description: str = ""
-    status: str = "active"
-    kernel: str = ""
+    status: str = "active"  # draft | active | stale | promoted | archived
+    format: str = ""  # "" (auto-detect) | "percent" | "marimo"
+    kernel: str = ""  # Jupyter kernelspec (percent-only; ignored for marimo)
     mod: str = ""
     pair_ipynb: bool = False
     pair_myst: bool = False
@@ -40,11 +41,22 @@ class NotebookConfig(BaseModel):
     """Schema for a flow's ``notebook.yml``."""
 
     kernel: str = ""
+    default_format: str = ""  # flow-level default: "percent" | "marimo" | ""
     publish: PublishConfig = Field(default_factory=PublishConfig)
     entries: list[NotebookEntry] = Field(default_factory=list)
 
+    def resolve_format(self, entry: NotebookEntry) -> str:
+        """Return effective format: entry-level > flow-level > auto-detect."""
+        return entry.format or self.default_format or ""
+
     def resolve_kernel(self, entry: NotebookEntry) -> str:
-        """Return the effective kernel for *entry*: entry-level > flow-level."""
+        """Return the effective kernel for *entry*.
+
+        Returns empty string for marimo notebooks (they don't use Jupyter kernels).
+        """
+        fmt = self.resolve_format(entry)
+        if fmt == "marimo":
+            return ""
         return entry.kernel or self.kernel
 
     @classmethod

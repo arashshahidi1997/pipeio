@@ -1,8 +1,12 @@
-"""Static analysis of percent-format .py notebooks.
+"""Static analysis of .py notebooks.
 
-Parses a jupytext percent-format script and returns structured metadata:
+Parses a notebook script and returns structured metadata:
 imports, RunCard dataclass fields, PipelineContext usage, section headers,
 and cogpy function calls.
+
+Supports multiple notebook formats via the ``NotebookBackend`` protocol.
+When no backend is provided, auto-detects the format or falls back to
+percent-format cell splitting.
 """
 
 from __future__ import annotations
@@ -10,11 +14,14 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pipeio.notebook.backend import NotebookBackend
 
 
 # ---------------------------------------------------------------------------
-# Cell splitting
+# Cell splitting (percent-format — kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
 _CELL_MARKER = re.compile(r"^# %%(?:\s+\[(\w+)\])?[^\n]*\n?", re.MULTILINE)
@@ -226,16 +233,25 @@ def _extract_cogpy_calls(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def analyze_notebook(py_path: Path) -> dict[str, Any]:
-    """Parse a percent-format .py notebook and return structured metadata.
+def analyze_notebook(
+    py_path: Path,
+    *,
+    backend: "NotebookBackend | None" = None,
+) -> dict[str, Any]:
+    """Parse a .py notebook and return structured metadata.
+
+    Accepts an optional *backend* for format-aware cell splitting.
+    Auto-detects format if not provided.
 
     Args:
-        py_path: Path to the percent-format ``.py`` notebook file.
+        py_path: Path to the ``.py`` notebook file.
+        backend: Optional notebook backend for format-aware cell splitting.
 
     Returns:
         dict with keys:
 
         - ``nb_path``: absolute path string
+        - ``format``: detected format name
         - ``imports``: list of import dicts (kind, module, alias, names)
         - ``run_card``: list of @dataclass field dicts (class, field, type, default)
         - ``pipeline_context``: list of PipelineContext/session call dicts
@@ -252,7 +268,20 @@ def analyze_notebook(py_path: Path) -> dict[str, Any]:
     except OSError as exc:
         return {"error": f"Cannot read notebook: {exc}"}
 
-    cells = _split_cells(source)
+    # Resolve backend for cell splitting
+    if backend is None:
+        try:
+            from pipeio.notebook.backend import resolve_backend
+            backend = resolve_backend("", py_path)
+        except Exception:
+            pass  # fall back to built-in _split_cells
+
+    if backend is not None:
+        cells = backend.split_cells(source)
+        fmt = backend.name
+    else:
+        cells = _split_cells(source)
+        fmt = "percent"
 
     all_imports: list[dict[str, Any]] = []
     all_run_card: list[dict[str, Any]] = []
@@ -306,6 +335,7 @@ def analyze_notebook(py_path: Path) -> dict[str, Any]:
 
     return {
         "nb_path": str(py_path),
+        "format": fmt,
         "imports": all_imports,
         "run_card": all_run_card,
         "pipeline_context": all_pipeline_context,

@@ -2264,25 +2264,16 @@ def mcp_nb_publish(
     elif format == "html":
         publish_myst, publish_html = False, True
 
-    # Write to .build/ (for docs_collect pipeline) and docs/ (for immediate visibility)
+    # Write to .build/ only — docs_collect handles the final copy to docs/
     build_dir = flow_dir / ".build" / "notebooks"
     build_dir.mkdir(parents=True, exist_ok=True)
-    dest_dir = root / "docs" / "pipelines" / flow / "notebooks"
-    dest_dir.mkdir(parents=True, exist_ok=True)
     published: list[str] = []
 
     if publish_myst:
         if myst_path.exists():
-            # Export to .build/
-            build_dest = build_dir / f"nb-{name}.md"
+            build_dest = build_dir / f"{name}.md"
             shutil.copy2(myst_path, build_dest)
-            # Also write to docs/ for immediate visibility
-            dest = dest_dir / f"nb-{name}.md"
-            shutil.copy2(myst_path, dest)
-            try:
-                published.append(str(dest.relative_to(root)))
-            except ValueError:
-                published.append(str(dest))
+            published.append(str(build_dest))
         else:
             return {
                 "error": f"MyST file not found: {myst_path}",
@@ -2291,16 +2282,9 @@ def mcp_nb_publish(
 
     if publish_html:
         if ipynb_path.exists():
-            # Export to .build/
-            build_dest = build_dir / f"nb-{name}.html"
+            build_dest = build_dir / f"{name}.html"
             _nbconvert_html(ipynb_path, build_dest)
-            # Also write to docs/ for immediate visibility
-            dest = dest_dir / f"nb-{name}.html"
-            shutil.copy2(build_dest, dest)
-            try:
-                published.append(str(dest.relative_to(root)))
-            except ValueError:
-                published.append(str(dest))
+            published.append(str(build_dest))
         else:
             return {
                 "error": f"ipynb file not found: {ipynb_path}",
@@ -2316,8 +2300,8 @@ def mcp_nb_publish(
     return {
         "published": published,
         "flow": flow,
-        "flow": flow,
         "name": name,
+        "hint": "Run pipeio_docs_collect to copy to docs/pipelines/.",
     }
 
 
@@ -4494,6 +4478,232 @@ def mcp_nb_promote(
 
 
 # ---------------------------------------------------------------------------
+# MCP tools: notebook report extraction
+# ---------------------------------------------------------------------------
+
+
+def mcp_nb_report(
+    root: Path,
+    flow: str,
+    name: str,
+    *,
+    overwrite: bool = False,
+    tags_only: bool = False,
+) -> dict[str, Any]:
+    """Extract figures, markdown, and text outputs from an executed notebook.
+
+    Saves extracted figures to ``{flow}/docs/reports/{name}/`` and returns
+    a structured payload for the agent to write a curated report from.
+
+    The report ``.md`` is **not** created by this tool — that is the agent's
+    responsibility (via the ``/report`` skill or manual writing).
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        name: Notebook basename (without extension).
+        overwrite: Re-extract figures even if the directory exists.
+        tags_only: Only extract cells tagged with ``# REPORT:`` marker.
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    # Resolve .py → .ipynb
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        return {"error": f"Notebook not found: {name}"}
+
+    from pipeio.notebook.lifecycle import _nb_output_paths
+    ipynb_path, _ = _nb_output_paths(py_path)
+
+    if not ipynb_path.exists():
+        return {
+            "error": (
+                f"Notebook .ipynb not found: {ipynb_path.name}. "
+                "Sync with pipeio_nb_sync first."
+            ),
+        }
+
+    # Check notebook has been executed (at least one cell with outputs)
+    import json as _json
+
+    nb_data = _json.loads(ipynb_path.read_text(encoding="utf-8"))
+    has_outputs = any(
+        cell.get("outputs")
+        for cell in nb_data.get("cells", [])
+        if cell.get("cell_type") == "code"
+    )
+    if not has_outputs:
+        return {
+            "error": (
+                "Notebook has not been executed — no cell outputs found. "
+                "Run pipeio_nb_exec first."
+            ),
+        }
+
+    # Extract via nbconvert
+    try:
+        from nbconvert import MarkdownExporter
+        from nbconvert.preprocessors import ExtractOutputPreprocessor
+    except ImportError:
+        return {
+            "error": "nbconvert required — install via: pip install nbconvert",
+        }
+
+    exporter = MarkdownExporter()
+    exporter.register_preprocessor(ExtractOutputPreprocessor, enabled=True)
+    body, resources = exporter.from_filename(str(ipynb_path))
+
+    # Classify cells from the raw notebook JSON
+    markdown_cells: list[dict[str, Any]] = []
+    figures: list[dict[str, Any]] = []
+    text_outputs: list[dict[str, Any]] = []
+
+    _REPORT_MD_TAG = "# REPORT:"
+    _REPORT_CODE_TAG = "# REPORT"
+
+    for cell_idx, cell in enumerate(nb_data.get("cells", [])):
+        cell_type = cell.get("cell_type", "")
+        source = "".join(cell.get("source", []))
+
+        if tags_only:
+            if cell_type == "markdown" and not source.lstrip().startswith(_REPORT_MD_TAG):
+                continue
+            if cell_type == "code":
+                first_lines = source.split("\n", 3)[:3]
+                if not any(line.strip() == _REPORT_CODE_TAG for line in first_lines):
+                    continue
+
+        if cell_type == "markdown":
+            content = source
+            if tags_only and content.lstrip().startswith(_REPORT_MD_TAG):
+                # Strip the tag prefix from the first line
+                lines = content.split("\n", 1)
+                first = lines[0].replace(_REPORT_MD_TAG, "", 1).strip()
+                rest = lines[1] if len(lines) > 1 else ""
+                content = f"# {first}\n{rest}" if first else rest
+            markdown_cells.append({"cell_index": cell_idx, "content": content})
+
+        elif cell_type == "code":
+            for output in cell.get("outputs", []):
+                output_type = output.get("output_type", "")
+
+                # Text outputs (stream + execute_result text)
+                if output_type == "stream":
+                    text = "".join(output.get("text", []))
+                    if text.strip():
+                        text_outputs.append({
+                            "cell_index": cell_idx,
+                            "content": text.strip(),
+                        })
+                elif output_type == "execute_result":
+                    text_data = output.get("data", {}).get("text/plain", "")
+                    if isinstance(text_data, list):
+                        text_data = "".join(text_data)
+                    if text_data.strip():
+                        text_outputs.append({
+                            "cell_index": cell_idx,
+                            "content": text_data.strip(),
+                        })
+
+                # Image outputs
+                if output_type in ("display_data", "execute_result"):
+                    for mime in ("image/png", "image/jpeg", "image/svg+xml"):
+                        if mime in output.get("data", {}):
+                            figures.append({
+                                "cell_index": cell_idx,
+                                "mime": mime,
+                                "alt_text": "",
+                            })
+
+    # Save extracted figures to docs/reports/{name}/
+    reports_dir = flow_dir / "docs" / "reports" / name
+    extracted_outputs = resources.get("outputs", {})
+    figures_extracted = 0
+    figures_skipped = 0
+
+    if extracted_outputs:
+        if reports_dir.exists() and not overwrite:
+            figures_skipped = len(extracted_outputs)
+        else:
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            for fname, data in extracted_outputs.items():
+                (reports_dir / fname).write_bytes(data)
+                figures_extracted += 1
+
+    # Update figure paths to be relative to docs/reports/
+    if figures_extracted > 0 or (reports_dir.exists() and figures_skipped > 0):
+        fig_files = sorted(reports_dir.glob("*")) if reports_dir.exists() else []
+        for i, fig in enumerate(figures):
+            if i < len(fig_files):
+                fig["path"] = f"{name}/{fig_files[i].name}"
+
+    # Resolve kernel from notebook.yml
+    kernel = ""
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            from pipeio.notebook.config import NotebookConfig
+            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+            for nb in nb_cfg.entries:
+                if Path(nb.path).stem == name:
+                    kernel = nb_cfg.resolve_kernel(nb)
+                    break
+        except Exception:
+            pass
+
+    # Execution timestamp from notebook metadata
+    executed_at = ""
+    metadata = nb_data.get("metadata", {})
+    if "papermill" in metadata:
+        executed_at = metadata["papermill"].get("end_time", "")
+
+    try:
+        ipynb_rel = str(ipynb_path.relative_to(root))
+    except ValueError:
+        ipynb_rel = str(ipynb_path)
+
+    try:
+        reports_rel = str(reports_dir.relative_to(root))
+    except ValueError:
+        reports_rel = str(reports_dir)
+
+    return {
+        "flow": entry.name,
+        "notebook": name,
+        "notebook_path": ipynb_rel,
+        "figures_dir": reports_rel,
+        "figures_extracted": figures_extracted,
+        "figures_skipped": figures_skipped,
+        "markdown_cells": markdown_cells,
+        "figures": figures,
+        "text_outputs": text_outputs,
+        "execution_metadata": {
+            "kernel": kernel,
+            "executed_at": executed_at,
+            "cell_count": len(nb_data.get("cells", [])),
+            "tagged_cells": (
+                len(markdown_cells) + len([f for f in figures]) + len(text_outputs)
+                if tags_only else None
+            ),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # MCP tools: notebook execution
 # ---------------------------------------------------------------------------
 
@@ -4673,6 +4883,153 @@ def mcp_nb_exec(
 
 
 # ---------------------------------------------------------------------------
+# MCP tools: notebook validation and watch
+# ---------------------------------------------------------------------------
+
+
+def _resolve_nb_with_config(
+    root: Path, flow: str, name: str,
+) -> tuple[Path | None, Any, Any]:
+    """Resolve notebook path and its config entry for a flow.
+
+    Returns ``(py_path, NotebookEntry or None, NotebookConfig or None)``.
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return None, None, None
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        flow_entry = registry.get(flow)
+    except (KeyError, ValueError):
+        return None, None, None
+
+    flow_dir = Path(flow_entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        return None, None, None
+
+    # Load config for format resolution
+    nb_cfg = None
+    nb_entry = None
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            from pipeio.notebook.config import NotebookConfig
+            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+            for e in nb_cfg.entries:
+                if Path(e.path).stem == name:
+                    nb_entry = e
+                    break
+        except Exception:
+            pass
+
+    return py_path, nb_entry, nb_cfg
+
+
+def mcp_nb_validate(
+    root: Path,
+    flow: str,
+    name: str,
+) -> dict[str, Any]:
+    """Validate notebook structure.
+
+    For percent-format: syntax-checks each cell, validates import isolation,
+    checks for variable shadowing.
+    For marimo: runs ``marimo check`` for DAG validation (cycle detection,
+    missing dependencies, undefined names).
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        name: Notebook stem name.
+
+    Returns:
+        dict with ``valid`` (bool), ``issues`` or ``stdout``/``stderr``,
+        ``format``.
+    """
+    from pipeio.notebook.backend import resolve_backend
+
+    py_path, nb_entry, nb_cfg = _resolve_nb_with_config(root, flow, name)
+    if py_path is None:
+        return {"error": f"Notebook '{name}' not found in flow '{flow}'"}
+
+    fmt = ""
+    if nb_cfg is not None and nb_entry is not None:
+        fmt = nb_cfg.resolve_format(nb_entry)
+    backend = resolve_backend(fmt, py_path)
+    return backend.validate(py_path)
+
+
+def mcp_nb_watch(
+    root: Path,
+    flow: str,
+    name: str,
+    port: int = 0,
+) -> dict[str, Any]:
+    """Launch ``marimo edit --watch`` for live human oversight.
+
+    Only supported for marimo-format notebooks. Returns the URL
+    for the browser UI and the PID for later termination.
+
+    For percent-format notebooks, returns an error suggesting ``nb_lab``
+    instead.
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        name: Notebook stem name.
+        port: Optional port for the marimo server (0 = auto).
+    """
+    import subprocess as sp
+
+    from pipeio.notebook.backend import resolve_backend
+
+    py_path, nb_entry, nb_cfg = _resolve_nb_with_config(root, flow, name)
+    if py_path is None:
+        return {"error": f"Notebook '{name}' not found in flow '{flow}'"}
+
+    fmt = ""
+    if nb_cfg is not None and nb_entry is not None:
+        fmt = nb_cfg.resolve_format(nb_entry)
+    backend = resolve_backend(fmt, py_path)
+
+    if backend.name != "marimo":
+        return {
+            "error": f"nb_watch is only supported for marimo notebooks (this is {backend.name}). "
+            "For percent-format notebooks, use nb_lab to open in Jupyter Lab.",
+        }
+
+    cmd = [*backend._marimo_cmd, "edit", str(py_path), "--watch"]
+    if port:
+        cmd.extend(["--port", str(port)])
+
+    try:
+        proc = sp.Popen(
+            cmd,
+            stdout=sp.PIPE,
+            stderr=sp.PIPE,
+            cwd=str(root),
+        )
+        return {
+            "status": "started",
+            "pid": proc.pid,
+            "command": " ".join(cmd),
+            "notebook": str(py_path),
+            "flow": flow,
+            "name": name,
+            "hint": "Open the URL shown in terminal output. Use kill(pid) to stop.",
+        }
+    except FileNotFoundError:
+        return {"error": "marimo command not found. Install with: pip install marimo"}
+
+
+# ---------------------------------------------------------------------------
 # MCP tools: snakemake native DAG export and report
 # ---------------------------------------------------------------------------
 
@@ -4782,21 +5139,16 @@ def mcp_dag_export(
 
     actual_format = "json" if graph_type == "d3dag" else output_format
 
-    # SVG → write to .build/ (for docs_collect) and docs/ (for immediate visibility)
+    # SVG → write to .build/ only — docs_collect handles the copy to docs/
     written_path = None
     if output_format == "svg":
         flow_dir = Path(entry.code_path)
         if not flow_dir.is_absolute():
             flow_dir = root / flow_dir
-        # Export to .build/ for docs_collect pipeline
         build_out = flow_dir / ".build" / "dag.svg"
         build_out.parent.mkdir(parents=True, exist_ok=True)
         build_out.write_text(graph_output, encoding="utf-8")
-        # Also write to docs/ for immediate visibility
-        out = root / "docs" / "pipelines" / entry.name / "dag.svg"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(graph_output, encoding="utf-8")
-        written_path = str(out.relative_to(root))
+        written_path = str(build_out.relative_to(root))
         # Inject DAG link into the source overview/index if not already present
         _inject_dag_link_in_source(flow_dir)
 
