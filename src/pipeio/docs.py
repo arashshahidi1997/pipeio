@@ -25,9 +25,9 @@ The source tree (``code/pipelines/<flow>/docs/``) is read-only during
 collection. ``docs/pipelines/`` is a build artifact (gitignored).
 Collected files carry a source-path header; never edit them directly.
 
-**overview.md convention:** If a flow has ``docs/overview.md`` but no
-``docs/index.md``, overview.md is used as the flow index content. If both
-exist, both are collected as separate pages.
+**Convention:** The flow landing page is ``docs/index.md``.  Legacy
+``docs/overview.md`` is accepted as a fallback (renamed to ``index.md``
+during collection when no source ``index.md`` exists).
 """
 
 from __future__ import annotations
@@ -240,8 +240,8 @@ class DocsCollector:
     """Copy hand-written docs from ``{flow}/docs/`` to the output tree.
 
     Routes mod facet directories (containing theory.md/spec.md/delta.md)
-    into ``mods/{mod}/``. Uses overview.md as the flow index when no
-    source index.md exists.
+    into ``mods/{mod}/``. Falls back to ``overview.md`` as the flow
+    index when no source ``index.md`` exists (legacy convention).
     """
 
     def collect(self, ctx: CollectContext) -> list[str]:

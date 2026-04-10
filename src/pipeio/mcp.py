@@ -51,7 +51,7 @@ def _find_dot() -> str | None:
 def _inject_dag_link_in_source(flow_dir: Path) -> None:
     """Inject ``![DAG](dag.svg)`` into the flow's source docs if not already present.
 
-    Checks ``docs/overview.md`` and ``docs/index.md`` (in that order).
+    Checks ``docs/index.md`` first, then ``docs/overview.md`` (legacy).
     The link uses a relative path that works both in the source location
     (where ``.build/dag.svg`` lives) and after ``docs_collect`` copies
     both files to ``docs/pipelines/<flow>/``.
@@ -60,7 +60,7 @@ def _inject_dag_link_in_source(flow_dir: Path) -> None:
     if not docs_dir.is_dir():
         return
 
-    for name in ("overview.md", "index.md"):
+    for name in ("index.md", "overview.md"):
         candidate = docs_dir / name
         if not candidate.exists():
             continue
@@ -548,77 +548,65 @@ def mcp_flow_new(
         created.append("notebook.yml")
         created.append(f"notebooks/explore/.src/{nb_name}.py")
 
-    # docs/index.md
+    # docs/index.md — flow overview (landing page)
     docs_index = flow_dir / "docs" / "index.md"
     if not docs_index.exists():
-        docs_index.write_text(
-            f"# {flow}\n"
-            f"\n"
-            f"Flow: `{flow}`\n"
-            f"\n"
-            f"## Mods\n"
-            f"\n"
-            f"(none yet)\n",
-            encoding="utf-8",
-        )
-        created.append("docs/index.md")
-
-    # docs/overview.md — flow overview template
-    overview = flow_dir / "docs" / "overview.md"
-    if not overview.exists():
-        # Read config for input/output paths if available
-        _input_dir = ""
-        _output_dir = f"derivatives/{flow}"
-        _input_manifest = ""
-        _output_manifest = f"derivatives/{flow}/manifest.yml"
-        if cfg_path.exists():
-            try:
-                _cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                _input_dir = _cfg.get("input_dir", _input_dir)
-                _output_dir = _cfg.get("output_dir", _output_dir)
-                _input_manifest = _cfg.get("input_manifest", _input_manifest)
-                _output_manifest = _cfg.get("output_manifest", _output_manifest)
-            except Exception:
-                pass
-        overview.write_text(
-            f"# {flow} — Flow Overview\n"
-            f"\n"
-            f"## Purpose\n"
-            f"\n"
-            f"<!-- What does this flow produce? Why is it a single flow\n"
-            f"     rather than split into multiple? What downstream flows\n"
-            f"     consume its output? -->\n"
-            f"\n"
-            f"## Input\n"
-            f"\n"
-            f"- Input directory: `{_input_dir}`\n"
-            f"- Input manifest: `{_input_manifest}`\n"
-            f"\n"
-            f"## Output\n"
-            f"\n"
-            f"- Output directory: `{_output_dir}`\n"
-            f"- Output manifest: `{_output_manifest}`\n"
-            f"\n"
-            f"## Mod Chain\n"
-            f"\n"
-            f"<!-- Processing order with rationale. -->\n"
-            f"\n"
-            f"| Order | Mod | Purpose |\n"
-            f"|-------|-----|---------|\n"
-            f"| 1 | | |\n"
-            f"\n"
-            f"## Design Decisions\n"
-            f"\n"
-            f"<!-- Why this mod ordering? Why certain steps read from\n"
-            f"     raw vs intermediate? -->\n"
-            f"\n"
-            f"## Known Gaps\n"
-            f"\n"
-            f"<!-- Flow-level issues, missing mods, planned additions.\n"
-            f"     Remove entries as they are resolved. -->\n",
-            encoding="utf-8",
-        )
-        created.append("docs/overview.md")
+        # Also accept legacy overview.md
+        legacy_overview = flow_dir / "docs" / "overview.md"
+        if not legacy_overview.exists():
+            # Read config for input/output paths if available
+            _input_dir = ""
+            _output_dir = f"derivatives/{flow}"
+            _input_manifest = ""
+            _output_manifest = f"derivatives/{flow}/manifest.yml"
+            if cfg_path.exists():
+                try:
+                    _cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                    _input_dir = _cfg.get("input_dir", _input_dir)
+                    _output_dir = _cfg.get("output_dir", _output_dir)
+                    _input_manifest = _cfg.get("input_manifest", _input_manifest)
+                    _output_manifest = _cfg.get("output_manifest", _output_manifest)
+                except Exception:
+                    pass
+            docs_index.write_text(
+                f"# {flow} — Flow Overview\n"
+                f"\n"
+                f"## Purpose\n"
+                f"\n"
+                f"<!-- What does this flow produce? Why is it a single flow\n"
+                f"     rather than split into multiple? What downstream flows\n"
+                f"     consume its output? -->\n"
+                f"\n"
+                f"## Input\n"
+                f"\n"
+                f"- Input directory: `{_input_dir}`\n"
+                f"- Input manifest: `{_input_manifest}`\n"
+                f"\n"
+                f"## Output\n"
+                f"\n"
+                f"- Output directory: `{_output_dir}`\n"
+                f"- Output manifest: `{_output_manifest}`\n"
+                f"\n"
+                f"## Mod Chain\n"
+                f"\n"
+                f"<!-- Processing order with rationale. -->\n"
+                f"\n"
+                f"| Order | Mod | Purpose |\n"
+                f"|-------|-----|---------|\n"
+                f"| 1 | | |\n"
+                f"\n"
+                f"## Design Decisions\n"
+                f"\n"
+                f"<!-- Why this mod ordering? Why certain steps read from\n"
+                f"     raw vs intermediate? -->\n"
+                f"\n"
+                f"## Known Gaps\n"
+                f"\n"
+                f"<!-- Flow-level issues, missing mods, planned additions.\n"
+                f"     Remove entries as they are resolved. -->\n",
+                encoding="utf-8",
+            )
+            created.append("docs/index.md")
 
     try:
         code_path = str(flow_dir.relative_to(root))
@@ -4482,57 +4470,28 @@ def mcp_nb_promote(
 # ---------------------------------------------------------------------------
 
 
-def mcp_nb_report(
+def _nb_report_percent(
     root: Path,
-    flow: str,
+    flow_name: str,
+    flow_dir: Path,
+    py_path: Path,
     name: str,
     *,
-    overwrite: bool = False,
-    tags_only: bool = False,
+    overwrite: bool,
+    tags_only: bool,
+    kernel: str,
 ) -> dict[str, Any]:
-    """Extract figures, markdown, and text outputs from an executed notebook.
+    """Extract report payload from a percent-format (ipynb) notebook."""
+    from pipeio.notebook.backend import resolve_backend
 
-    Saves extracted figures to ``{flow}/docs/reports/{name}/`` and returns
-    a structured payload for the agent to write a curated report from.
+    backend = resolve_backend("percent", py_path)
+    outputs = backend.output_paths(py_path)
+    ipynb_path = outputs.get("ipynb")
 
-    The report ``.md`` is **not** created by this tool — that is the agent's
-    responsibility (via the ``/report`` skill or manual writing).
-
-    Args:
-        root: Project root.
-        flow: Flow name.
-        name: Notebook basename (without extension).
-        overwrite: Re-extract figures even if the directory exists.
-        tags_only: Only extract cells tagged with ``# REPORT:`` marker.
-    """
-    from pipeio.registry import PipelineRegistry
-
-    registry_path = _find_registry(root)
-    if not registry_path:
-        return _NO_REGISTRY
-
-    registry = PipelineRegistry.from_yaml(registry_path)
-    try:
-        entry = registry.get(flow)
-    except (KeyError, ValueError) as exc:
-        return {"error": str(exc)}
-
-    flow_dir = Path(entry.code_path)
-    if not flow_dir.is_absolute():
-        flow_dir = root / flow_dir
-
-    # Resolve .py → .ipynb
-    py_path = _resolve_nb_path(flow_dir, name)
-    if py_path is None:
-        return {"error": f"Notebook not found: {name}"}
-
-    from pipeio.notebook.lifecycle import _nb_output_paths
-    ipynb_path, _ = _nb_output_paths(py_path)
-
-    if not ipynb_path.exists():
+    if ipynb_path is None or not ipynb_path.exists():
         return {
             "error": (
-                f"Notebook .ipynb not found: {ipynb_path.name}. "
+                f"Notebook .ipynb not found for {name}. "
                 "Sync with pipeio_nb_sync first."
             ),
         }
@@ -4565,12 +4524,13 @@ def mcp_nb_report(
 
     exporter = MarkdownExporter()
     exporter.register_preprocessor(ExtractOutputPreprocessor, enabled=True)
-    body, resources = exporter.from_filename(str(ipynb_path))
+    _body, resources = exporter.from_filename(str(ipynb_path))
 
     # Classify cells from the raw notebook JSON
     markdown_cells: list[dict[str, Any]] = []
     figures: list[dict[str, Any]] = []
     text_outputs: list[dict[str, Any]] = []
+    html_outputs: list[dict[str, Any]] = []
 
     _REPORT_MD_TAG = "# REPORT:"
     _REPORT_CODE_TAG = "# REPORT"
@@ -4600,6 +4560,7 @@ def mcp_nb_report(
         elif cell_type == "code":
             for output in cell.get("outputs", []):
                 output_type = output.get("output_type", "")
+                data = output.get("data", {})
 
                 # Text outputs (stream + execute_result text)
                 if output_type == "stream":
@@ -4610,7 +4571,7 @@ def mcp_nb_report(
                             "content": text.strip(),
                         })
                 elif output_type == "execute_result":
-                    text_data = output.get("data", {}).get("text/plain", "")
+                    text_data = data.get("text/plain", "")
                     if isinstance(text_data, list):
                         text_data = "".join(text_data)
                     if text_data.strip():
@@ -4619,15 +4580,41 @@ def mcp_nb_report(
                             "content": text_data.strip(),
                         })
 
-                # Image outputs
+                # Image outputs (extractable as static files)
                 if output_type in ("display_data", "execute_result"):
+                    has_image = False
                     for mime in ("image/png", "image/jpeg", "image/svg+xml"):
-                        if mime in output.get("data", {}):
+                        if mime in data:
                             figures.append({
                                 "cell_index": cell_idx,
                                 "mime": mime,
                                 "alt_text": "",
                             })
+                            has_image = True
+
+                    # HTML widget outputs (holoviews, bokeh, plotly, etc.)
+                    # These render as interactive widgets in Jupyter but
+                    # cannot be extracted as static images by nbconvert.
+                    if not has_image and "text/html" in data:
+                        html_content = data["text/html"]
+                        if isinstance(html_content, list):
+                            html_content = "".join(html_content)
+                        # Detect interactive widget libraries
+                        widget_lib = "unknown"
+                        for lib, marker in (
+                            ("holoviews", "HoloViews"),
+                            ("bokeh", "Bokeh"),
+                            ("plotly", "plotly"),
+                            ("ipywidgets", "jupyter-widgets"),
+                        ):
+                            if marker in html_content:
+                                widget_lib = lib
+                                break
+                        html_outputs.append({
+                            "cell_index": cell_idx,
+                            "widget_lib": widget_lib,
+                            "html_length": len(html_content),
+                        })
 
     # Save extracted figures to docs/reports/{name}/
     reports_dir = flow_dir / "docs" / "reports" / name
@@ -4640,8 +4627,8 @@ def mcp_nb_report(
             figures_skipped = len(extracted_outputs)
         else:
             reports_dir.mkdir(parents=True, exist_ok=True)
-            for fname, data in extracted_outputs.items():
-                (reports_dir / fname).write_bytes(data)
+            for fname, fdata in extracted_outputs.items():
+                (reports_dir / fname).write_bytes(fdata)
                 figures_extracted += 1
 
     # Update figure paths to be relative to docs/reports/
@@ -4651,20 +4638,6 @@ def mcp_nb_report(
             if i < len(fig_files):
                 fig["path"] = f"{name}/{fig_files[i].name}"
 
-    # Resolve kernel from notebook.yml
-    kernel = ""
-    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
-    if nb_cfg_path.exists():
-        try:
-            from pipeio.notebook.config import NotebookConfig
-            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
-            for nb in nb_cfg.entries:
-                if Path(nb.path).stem == name:
-                    kernel = nb_cfg.resolve_kernel(nb)
-                    break
-        except Exception:
-            pass
-
     # Execution timestamp from notebook metadata
     executed_at = ""
     metadata = nb_data.get("metadata", {})
@@ -4672,19 +4645,20 @@ def mcp_nb_report(
         executed_at = metadata["papermill"].get("end_time", "")
 
     try:
-        ipynb_rel = str(ipynb_path.relative_to(root))
+        nb_rel = str(ipynb_path.relative_to(root))
     except ValueError:
-        ipynb_rel = str(ipynb_path)
+        nb_rel = str(ipynb_path)
 
     try:
         reports_rel = str(reports_dir.relative_to(root))
     except ValueError:
         reports_rel = str(reports_dir)
 
-    return {
-        "flow": entry.name,
+    result: dict[str, Any] = {
+        "flow": flow_name,
         "notebook": name,
-        "notebook_path": ipynb_rel,
+        "format": "percent",
+        "notebook_path": nb_rel,
         "figures_dir": reports_rel,
         "figures_extracted": figures_extracted,
         "figures_skipped": figures_skipped,
@@ -4696,11 +4670,216 @@ def mcp_nb_report(
             "executed_at": executed_at,
             "cell_count": len(nb_data.get("cells", [])),
             "tagged_cells": (
-                len(markdown_cells) + len([f for f in figures]) + len(text_outputs)
+                len(markdown_cells) + len(figures) + len(text_outputs)
                 if tags_only else None
             ),
         },
     }
+
+    if html_outputs:
+        result["html_outputs"] = html_outputs
+        libs = sorted({h["widget_lib"] for h in html_outputs})
+        result["html_outputs_hint"] = (
+            f"{len(html_outputs)} interactive widget output(s) detected "
+            f"({', '.join(libs)}). These render as HTML in Jupyter but cannot "
+            "be extracted as static images. To include them in the report, "
+            "add matplotlib summary plots alongside the interactive widgets, "
+            "or use hv.save()/fig.write_image() to export static PNGs."
+        )
+
+    return result
+
+
+def _nb_report_marimo(
+    root: Path,
+    flow_name: str,
+    flow_dir: Path,
+    py_path: Path,
+    name: str,
+    *,
+    overwrite: bool,
+    tags_only: bool,
+) -> dict[str, Any]:
+    """Extract report payload from a marimo-format notebook.
+
+    Uses ``marimo export md`` to produce markdown with embedded figures,
+    then parses the result.
+    """
+    import tempfile
+
+    from pipeio.notebook.backend import resolve_backend
+
+    backend = resolve_backend("marimo", py_path)
+
+    # Export to markdown via marimo
+    reports_dir = flow_dir / "docs" / "reports" / name
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        md_out = Path(tmpdir) / f"{name}.md"
+        result = backend.export(
+            py_path, output_format="md", output_path=md_out,
+        )
+        if not result.get("exported"):
+            return {
+                "error": (
+                    f"Marimo export failed: {result.get('stderr', 'unknown error')}. "
+                    "Ensure the notebook runs without errors."
+                ),
+            }
+
+        md_text = md_out.read_text(encoding="utf-8") if md_out.exists() else ""
+
+        # Extract embedded images (base64 data URIs in markdown)
+        import re
+
+        img_pattern = re.compile(
+            r"!\[([^\]]*)\]\(data:image/(png|jpeg|svg\+xml);base64,([A-Za-z0-9+/=\s]+)\)"
+        )
+        figures: list[dict[str, Any]] = []
+        figures_extracted = 0
+        figures_skipped = 0
+
+        if reports_dir.exists() and not overwrite:
+            figures_skipped = len(img_pattern.findall(md_text))
+        else:
+            import base64
+
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            for i, match in enumerate(img_pattern.finditer(md_text)):
+                alt_text, mime_sub, b64data = match.group(1), match.group(2), match.group(3)
+                ext = {"png": ".png", "jpeg": ".jpg", "svg+xml": ".svg"}.get(
+                    mime_sub, ".png"
+                )
+                fname = f"output_{i}{ext}"
+                (reports_dir / fname).write_bytes(base64.b64decode(b64data))
+                figures.append({
+                    "cell_index": i,
+                    "path": f"{name}/{fname}",
+                    "mime": f"image/{mime_sub}",
+                    "alt_text": alt_text,
+                })
+                figures_extracted += 1
+
+    # Split markdown into narrative sections (strip images already extracted)
+    markdown_cells: list[dict[str, Any]] = []
+    if md_text:
+        # Remove base64 image blocks, keep text
+        clean_md = img_pattern.sub("", md_text).strip()
+        if clean_md:
+            markdown_cells.append({"cell_index": 0, "content": clean_md})
+
+    try:
+        nb_rel = str(py_path.relative_to(root))
+    except ValueError:
+        nb_rel = str(py_path)
+
+    try:
+        reports_rel = str(reports_dir.relative_to(root))
+    except ValueError:
+        reports_rel = str(reports_dir)
+
+    return {
+        "flow": flow_name,
+        "notebook": name,
+        "format": "marimo",
+        "notebook_path": nb_rel,
+        "figures_dir": reports_rel,
+        "figures_extracted": figures_extracted,
+        "figures_skipped": figures_skipped,
+        "markdown_cells": markdown_cells,
+        "figures": figures,
+        "text_outputs": [],
+        "execution_metadata": {
+            "kernel": "",
+            "executed_at": "",
+            "cell_count": 0,
+            "tagged_cells": None,
+        },
+    }
+
+
+def mcp_nb_report(
+    root: Path,
+    flow: str,
+    name: str,
+    *,
+    overwrite: bool = False,
+    tags_only: bool = False,
+) -> dict[str, Any]:
+    """Extract figures, markdown, and text outputs from an executed notebook.
+
+    Saves extracted figures to ``{flow}/docs/reports/{name}/`` and returns
+    a structured payload for the agent to write a curated report from.
+
+    Supports both percent-format (ipynb) and marimo notebooks via the
+    backend system. For percent-format, uses nbconvert extraction. For
+    marimo, uses ``marimo export md``.
+
+    Interactive widget outputs (holoviews, bokeh, plotly) that cannot be
+    extracted as static images are reported in ``html_outputs`` with a
+    hint on how to produce static alternatives.
+
+    The report ``.md`` is **not** created by this tool — that is the agent's
+    responsibility (via the ``/report`` skill or manual writing).
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        name: Notebook basename (without extension).
+        overwrite: Re-extract figures even if the directory exists.
+        tags_only: Only extract cells tagged with ``# REPORT:`` marker
+            (percent-format only; ignored for marimo).
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+
+    py_path = _resolve_nb_path(flow_dir, name)
+    if py_path is None:
+        return {"error": f"Notebook not found: {name}"}
+
+    # Resolve format via notebook.yml config or auto-detection
+    fmt = ""
+    kernel = ""
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if nb_cfg_path.exists():
+        try:
+            from pipeio.notebook.config import NotebookConfig
+            nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+            for nb_entry in nb_cfg.entries:
+                if Path(nb_entry.path).stem == name:
+                    fmt = nb_cfg.resolve_format(nb_entry)
+                    kernel = nb_cfg.resolve_kernel(nb_entry)
+                    break
+        except Exception:
+            pass
+
+    if not fmt:
+        from pipeio.notebook.backend import detect_format
+        fmt = detect_format(py_path)
+
+    if fmt == "marimo":
+        return _nb_report_marimo(
+            root, entry.name, flow_dir, py_path, name,
+            overwrite=overwrite, tags_only=tags_only,
+        )
+
+    return _nb_report_percent(
+        root, entry.name, flow_dir, py_path, name,
+        overwrite=overwrite, tags_only=tags_only, kernel=kernel,
+    )
 
 
 # ---------------------------------------------------------------------------
