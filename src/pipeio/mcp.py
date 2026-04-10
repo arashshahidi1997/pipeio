@@ -4742,7 +4742,6 @@ def mcp_dag_export(
         written_path = str(out.relative_to(root))
 
     result_dict: dict[str, Any] = {
-        "pipe": entry.pipe,
         "flow": entry.name,
         "graph_type": graph_type,
         "format": actual_format,
@@ -4861,7 +4860,6 @@ def mcp_report(
         return {"error": f"Snakemake report failed: {result.stderr[:1000]}"}
 
     return {
-        "pipe": entry.pipe,
         "flow": entry.name,
         "report_path": output_path,
         "exists": report_abs.exists(),
