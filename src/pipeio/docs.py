@@ -314,19 +314,6 @@ class NotebookCollector:
         return collected
 
 
-def _embed_dag_in_index(target: Path) -> None:
-    """Append a DAG section to ``index.md`` if ``dag.svg`` exists but isn't referenced."""
-    index = target / "index.md"
-    dag = target / "dag.svg"
-    if not index.exists() or not dag.exists():
-        return
-    text = index.read_text(encoding="utf-8")
-    if "dag.svg" in text:
-        return  # already referenced
-    text = text.rstrip("\n") + "\n\n## DAG\n\n![DAG](dag.svg)\n"
-    index.write_text(text, encoding="utf-8")
-
-
 class DagCollector:
     """Copy pre-built DAG SVG to the output tree and embed in the flow overview.
 
@@ -352,9 +339,6 @@ class DagCollector:
         if _is_stale(dag_src, dag_dst):
             ctx.target.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dag_src, dag_dst)
-
-        # Embed DAG reference in existing index.md (from DocsCollector)
-        _embed_dag_in_index(ctx.target)
 
         return [str(dag_dst)]
 
