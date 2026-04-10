@@ -22,6 +22,32 @@ def _find_registry(root: Path) -> Path | None:
 _NO_REGISTRY = {"error": "No pipeline registry found", "hint": "Run pipeio init"}
 
 
+def _find_dot() -> str | None:
+    """Find the graphviz ``dot`` binary.
+
+    Checks PATH first, then known conda env locations.
+    """
+    import shutil
+    import sys
+
+    found = shutil.which("dot")
+    if found:
+        return found
+
+    # Check alongside the running Python (same conda env)
+    env_bin = Path(sys.executable).parent / "dot"
+    if env_bin.exists():
+        return str(env_bin)
+
+    # Known conda env fallback paths
+    for env in ("rag", "cogpy"):
+        candidate = Path("/storage/share/python/environments/Anaconda3/envs") / env / "bin" / "dot"
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
 def _resolve_nb_path(flow_dir: Path, name: str) -> Path | None:
     """Resolve a notebook name to its .py path.
 
@@ -4706,9 +4732,15 @@ def mcp_dag_export(
 
     # Optionally convert dot to SVG
     if output_format == "svg" and graph_type != "d3dag":
+        dot_bin = _find_dot()
+        if dot_bin is None:
+            return {
+                "error": "graphviz 'dot' not found — install with: conda install -c conda-forge graphviz",
+                "dot": graph_output,
+            }
         try:
             svg_result = subprocess.run(
-                ["dot", "-Tsvg"], input=graph_output, capture_output=True,
+                [dot_bin, "-Tsvg"], input=graph_output, capture_output=True,
                 text=True, timeout=30, check=False,
             )
             if svg_result.returncode != 0:
@@ -4719,7 +4751,7 @@ def mcp_dag_export(
             graph_output = svg_result.stdout
         except FileNotFoundError:
             return {
-                "error": "graphviz 'dot' not found — install with: apt install graphviz",
+                "error": f"graphviz 'dot' not found at {dot_bin}",
                 "dot": graph_output,
             }
 
