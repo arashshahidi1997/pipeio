@@ -48,6 +48,31 @@ def _find_dot() -> str | None:
     return None
 
 
+def _inject_dag_link_in_source(flow_dir: Path) -> None:
+    """Inject ``![DAG](dag.svg)`` into the flow's source docs if not already present.
+
+    Checks ``docs/overview.md`` and ``docs/index.md`` (in that order).
+    The link uses a relative path that works both in the source location
+    (where ``.build/dag.svg`` lives) and after ``docs_collect`` copies
+    both files to ``docs/pipelines/<flow>/``.
+    """
+    docs_dir = flow_dir / "docs"
+    if not docs_dir.is_dir():
+        return
+
+    for name in ("overview.md", "index.md"):
+        candidate = docs_dir / name
+        if not candidate.exists():
+            continue
+        text = candidate.read_text(encoding="utf-8")
+        if "dag.svg" in text:
+            return  # already has a DAG reference
+        # Append DAG section
+        text = text.rstrip("\n") + "\n\n## DAG\n\n![Rule DAG](dag.svg)\n"
+        candidate.write_text(text, encoding="utf-8")
+        return  # only inject into the first found
+
+
 def _resolve_nb_path(flow_dir: Path, name: str) -> Path | None:
     """Resolve a notebook name to its .py path.
 
@@ -4772,6 +4797,8 @@ def mcp_dag_export(
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(graph_output, encoding="utf-8")
         written_path = str(out.relative_to(root))
+        # Inject DAG link into the source overview/index if not already present
+        _inject_dag_link_in_source(flow_dir)
 
     result_dict: dict[str, Any] = {
         "flow": entry.name,
