@@ -6113,6 +6113,31 @@ def mcp_run(
     if not snakefile.exists():
         return {"error": f"No Snakefile in {flow_dir.relative_to(root)}"}
 
+    # Auto-unlock stale locks: if lock files exist but no active screen
+    # session is running for this flow, unlock before proceeding.
+    lock_dir = flow_dir / ".snakemake" / "locks"
+    if lock_dir.is_dir() and any(lock_dir.iterdir()):
+        # Check if any pipeio screen for this flow is still alive
+        try:
+            screen_out = subprocess.run(
+                ["screen", "-ls"], capture_output=True, text=True,
+            )
+            flow_screen_alive = f"pipeio-{entry.name}-" in screen_out.stdout
+        except Exception:
+            flow_screen_alive = False
+
+        if not flow_screen_alive:
+            snake_unlock = snakemake_cmd or ["snakemake"]
+            unlock_cmd = [
+                *snake_unlock,
+                "--snakefile", str(snakefile),
+                "--directory", str(flow_dir),
+                "--unlock",
+            ]
+            subprocess.run(
+                unlock_cmd, capture_output=True, cwd=str(root), timeout=30,
+            )
+
     # Generate run ID and log path
     run_id = str(uuid.uuid4())[:8]
     timestamp = time.strftime("%Y%m%d-%H%M%S")
