@@ -78,16 +78,23 @@ def _resolve_nb_path(flow_dir: Path, name: str) -> Path | None:
 
     Checks layouts in priority order:
     1. Workspace ``.src/`` layouts: ``notebooks/{workspace}/.src/{name}.py``
-    2. Flat ``.src/`` layout: ``notebooks/.src/{name}.py``
-    3. Flat layout: ``notebooks/{name}.py``
-    4. Subdirectory layout: ``notebooks/{name}/{name}.py`` (legacy)
-    5. Fall back to ``notebook.yml`` entry matching
+    2. Workspace direct layouts: ``notebooks/{workspace}/{name}.py`` (marimo)
+    3. Flat ``.src/`` layout: ``notebooks/.src/{name}.py``
+    4. Flat layout: ``notebooks/{name}.py``
+    5. Subdirectory layout: ``notebooks/{name}/{name}.py`` (legacy)
+    6. Fall back to ``notebook.yml`` entry matching
     """
-    # Workspace .src/ layouts (explore and demo)
+    # Workspace .src/ layouts (explore and demo) — percent-format
     for workspace in ("explore", "demo"):
         ws_src = flow_dir / "notebooks" / workspace / ".src" / f"{name}.py"
         if ws_src.exists():
             return ws_src
+
+    # Workspace direct layouts (explore and demo) — marimo lives here
+    for workspace in ("explore", "demo"):
+        ws_direct = flow_dir / "notebooks" / workspace / f"{name}.py"
+        if ws_direct.exists():
+            return ws_direct
 
     # Flat .src/ layout
     src = flow_dir / "notebooks" / ".src" / f"{name}.py"
@@ -1609,18 +1616,26 @@ def mcp_nb_create(
     name: str,
     kind: str = "investigate",
     description: str = "",
+    format: str = "",
 ) -> dict[str, Any]:
     """Scaffold a new notebook for a flow.
 
-    Creates a percent-format ``.py`` script with bootstrap cells
-    (config load, registry groups) and registers it in ``notebook.yml``.
+    Creates a ``.py`` notebook (percent-format or marimo) with bootstrap
+    cells and registers it in ``notebook.yml``.
+
+    Percent-format notebooks are placed in ``.src/`` (agent territory).
+    Marimo notebooks are placed directly in the workspace dir (the ``.py``
+    IS the human interface).
 
     Args:
         root: Project root.
         flow: Flow name.
         name: Notebook name (e.g. ``investigate_noise``).
-        kind: Prefix convention (investigate, explore, demo).
+        kind: Prefix convention (investigate, explore, demo, interactive).
         description: One-line purpose, injected as header comment.
+        format: Notebook format (``"percent"``, ``"marimo"``, or ``""``
+            for auto-select based on kind — ``interactive`` defaults
+            to marimo, others to percent).
     """
     from pipeio.config import FlowConfig
     from pipeio.notebook.config import NotebookConfig, NotebookEntry
@@ -1643,8 +1658,13 @@ def mcp_nb_create(
 
     nb_dir = flow_dir / "notebooks"
 
+    # Resolve format: interactive defaults to marimo, others to percent
+    effective_format = format
+    if not effective_format:
+        effective_format = "marimo" if kind == "interactive" else "percent"
+
     # Route to workspace directory based on kind
-    _EXPLORE_KINDS = {"investigate", "explore"}
+    _EXPLORE_KINDS = {"investigate", "explore", "interactive"}
     _DEMO_KINDS = {"demo", "validate"}
     if kind in _EXPLORE_KINDS:
         workspace = "explore"
@@ -1653,13 +1673,21 @@ def mcp_nb_create(
     else:
         workspace = ""
 
-    if workspace:
-        src_dir = nb_dir / workspace / ".src"
+    # Marimo files live in workspace dir directly (the .py IS the human interface)
+    # Percent-format files live in .src/ (hidden, .ipynb is the human interface)
+    if effective_format == "marimo":
+        if workspace:
+            target_dir = nb_dir / workspace
+        else:
+            target_dir = nb_dir
     else:
-        src_dir = nb_dir / ".src"
-    src_dir.mkdir(parents=True, exist_ok=True)
+        if workspace:
+            target_dir = nb_dir / workspace / ".src"
+        else:
+            target_dir = nb_dir / ".src"
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    nb_path = src_dir / f"{name}.py"
+    nb_path = target_dir / f"{name}.py"
     if nb_path.exists():
         return {"error": f"Notebook already exists: {nb_path.relative_to(root)}"}
 
@@ -1692,18 +1720,20 @@ def mcp_nb_create(
     except Exception:
         pass
 
-    # Compute relative config path from notebook .src/ dir
+    # Compute relative config path from notebook dir
     rel_cfg_str = ""
     if config_path_str:
         try:
             abs_cfg = (root / config_path_str).resolve()
-            rel_cfg_str = str(abs_cfg.relative_to(src_dir.resolve()))
+            rel_cfg_str = str(abs_cfg.relative_to(target_dir.resolve()))
         except ValueError:
             rel_cfg_str = config_path_str
 
-    # Generate percent-format .py with kind-aware template
+    # Generate template via backend
+    from pipeio.notebook.backend import get_backend
+    backend = get_backend(effective_format)
     desc_text = description or f"{kind.title()} notebook for {flow}"
-    lines: list[str] = _nb_template(
+    content = backend.template(
         name=name,
         flow=flow,
         kind=kind,
@@ -1714,7 +1744,7 @@ def mcp_nb_create(
         compute_lib=compute_lib,
     )
 
-    nb_path.write_text("\n".join(lines), encoding="utf-8")
+    nb_path.write_text(content, encoding="utf-8")
 
     # Register in notebook.yml
     nb_cfg_path = nb_dir / "notebook.yml"
@@ -1726,21 +1756,31 @@ def mcp_nb_create(
     else:
         nb_cfg = NotebookConfig()
 
-    if workspace:
-        rel_nb = f"notebooks/{workspace}/.src/{name}.py"
+    # Marimo: workspace dir directly. Percent: .src/ subdir.
+    if effective_format == "marimo":
+        if workspace:
+            rel_nb = f"notebooks/{workspace}/{name}.py"
+        else:
+            rel_nb = f"notebooks/{name}.py"
     else:
-        rel_nb = f"notebooks/.src/{name}.py"
+        if workspace:
+            rel_nb = f"notebooks/{workspace}/.src/{name}.py"
+        else:
+            rel_nb = f"notebooks/.src/{name}.py"
+
     existing_paths = {e.path for e in nb_cfg.entries}
     if rel_nb not in existing_paths:
-        nb_cfg.entries.append(NotebookEntry(
-            path=rel_nb,
-            kind=kind,
-            description=description,
-            status="active",
-            pair_ipynb=True,
-            pair_myst=True,
-            publish_myst=True,
-        ))
+        new_entry_kwargs: dict[str, Any] = {
+            "path": rel_nb,
+            "kind": kind,
+            "description": description,
+            "status": "active",
+        }
+        if effective_format == "marimo":
+            new_entry_kwargs["format"] = "marimo"
+        else:
+            new_entry_kwargs.update(pair_ipynb=True, pair_myst=True, publish_myst=True)
+        nb_cfg.entries.append(NotebookEntry(**new_entry_kwargs))
         import yaml
         nb_cfg_path.write_text(
             yaml.dump(nb_cfg.model_dump(), sort_keys=False, default_flow_style=False),
@@ -5206,6 +5246,174 @@ def mcp_nb_watch(
         }
     except FileNotFoundError:
         return {"error": "marimo command not found. Install with: pip install marimo"}
+
+
+def mcp_nb_snapshot(
+    root: Path,
+    flow: str,
+    name: str,
+    timeout: int = 120,
+    max_text_length: int = 2000,
+) -> dict[str, Any]:
+    """Capture a marimo session snapshot: execute all cells and return outputs.
+
+    Runs ``marimo export session`` to produce a JSON snapshot, then parses
+    it into a structured summary with cell outputs, console (stdout/stderr),
+    and errors.  Large binary MIME data (images) is replaced with a size
+    placeholder to keep the response manageable.
+
+    This is the agent's "eyes" — it sees what the human sees in the marimo
+    browser UI.
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        name: Notebook stem name.
+        timeout: Execution timeout in seconds (default 120).
+        max_text_length: Truncate text outputs longer than this (default 2000).
+
+    Returns:
+        dict with ``cells`` (list of cell summaries), ``errors`` (bool),
+        ``cell_count``, ``error_count``.
+    """
+    import json as _json
+    import subprocess as sp
+    import tempfile
+
+    from pipeio.notebook.backend import resolve_backend
+
+    py_path, nb_entry, nb_cfg = _resolve_nb_with_config(root, flow, name)
+    if py_path is None:
+        return {"error": f"Notebook '{name}' not found in flow '{flow}'"}
+
+    fmt = ""
+    if nb_cfg is not None and nb_entry is not None:
+        fmt = nb_cfg.resolve_format(nb_entry)
+    backend = resolve_backend(fmt, py_path)
+
+    if backend.name != "marimo":
+        return {
+            "error": f"nb_snapshot is only supported for marimo notebooks (this is {backend.name}). "
+            "For percent-format, use nb_exec + nb_read to inspect ipynb outputs.",
+        }
+
+    # Run marimo export session to a temp dir
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_dir = Path(tmpdir) / "__marimo__" / "session"
+        cmd = [
+            *backend._marimo_cmd, "export", "session",
+            str(py_path),
+            "--force-overwrite",
+        ]
+
+        try:
+            result = sp.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(py_path.parent),
+                env={**__import__("os").environ, "MARIMO_SESSION_DIR": str(session_dir)},
+            )
+        except sp.TimeoutExpired:
+            return {"error": f"Snapshot timed out after {timeout}s"}
+        except FileNotFoundError:
+            return {"error": "marimo command not found"}
+
+        # Find the session JSON — marimo writes to __marimo__/session/ next to the notebook
+        # or in the working directory
+        session_json = None
+        for candidate_dir in [
+            py_path.parent / "__marimo__" / "session",
+            session_dir,
+            Path(tmpdir),
+        ]:
+            if candidate_dir.exists():
+                for f in candidate_dir.glob("*.json"):
+                    session_json = f
+                    break
+            if session_json:
+                break
+
+        if session_json is None:
+            # Try parsing stdout as JSON (some versions output to stdout)
+            stderr_text = result.stderr[-1000:] if result.stderr else ""
+            return {
+                "error": f"Session snapshot not found after export. "
+                f"returncode={result.returncode}",
+                "stderr": stderr_text,
+                "stdout": result.stdout[-500:] if result.stdout else "",
+            }
+
+        try:
+            snapshot = _json.loads(session_json.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"error": f"Failed to parse session JSON: {exc}"}
+
+    # Parse snapshot into agent-friendly summary
+    cells_summary: list[dict[str, Any]] = []
+    error_count = 0
+
+    for cell in snapshot.get("cells", []):
+        cell_info: dict[str, Any] = {
+            "id": cell.get("id", ""),
+        }
+
+        # Console output (prints, stderr)
+        console_lines: list[str] = []
+        for entry in cell.get("console", []):
+            if entry.get("type") == "stream":
+                text = entry.get("text", "")
+                if len(text) > max_text_length:
+                    text = text[:max_text_length] + f"\n... (truncated, {len(entry['text'])} chars total)"
+                prefix = "" if entry.get("name") == "stdout" else "[stderr] "
+                console_lines.append(f"{prefix}{text}")
+        if console_lines:
+            cell_info["console"] = "\n".join(console_lines)
+
+        # Cell outputs
+        for output in cell.get("outputs", []):
+            if output.get("type") == "error":
+                cell_info["error"] = {
+                    "name": output.get("ename", ""),
+                    "message": output.get("evalue", ""),
+                    "traceback": output.get("traceback", [])[-5:],  # last 5 frames
+                }
+                error_count += 1
+            elif output.get("type") == "data":
+                data = output.get("data", {})
+                # Prefer text/plain, then text/html (truncated), skip binary
+                if "text/plain" in data:
+                    text = data["text/plain"]
+                    if len(text) > max_text_length:
+                        text = text[:max_text_length] + f"\n... (truncated)"
+                    cell_info["output_text"] = text
+                elif "text/html" in data:
+                    html = data["text/html"]
+                    if len(html) > max_text_length:
+                        html = html[:max_text_length] + "\n... (truncated)"
+                    cell_info["output_html"] = html
+                # Note binary outputs without including them
+                for mime in data:
+                    if mime.startswith("image/"):
+                        cell_info["has_image"] = True
+                        cell_info["image_mime"] = mime
+                        break
+
+        # Only include cells with actual output
+        if len(cell_info) > 1:  # more than just "id"
+            cells_summary.append(cell_info)
+
+    return {
+        "cells": cells_summary,
+        "cell_count": len(snapshot.get("cells", [])),
+        "output_cells": len(cells_summary),
+        "error_count": error_count,
+        "has_errors": error_count > 0,
+        "notebook": str(py_path),
+        "flow": flow,
+        "name": name,
+    }
 
 
 # ---------------------------------------------------------------------------

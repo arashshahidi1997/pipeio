@@ -392,6 +392,8 @@ class PercentBackend:
             "# %%",
             "from pathlib import Path",
             "",
+            "import yaml",
+            "",
         ])
 
         if config_path:
@@ -426,16 +428,27 @@ class PercentBackend:
             "",
         ])
 
-        # --- Findings cell ---
-        L.extend([
-            "# %% [markdown]",
-            "# ## Findings",
-            "#",
-            "# Summarize results here. These feed into theory.md.",
-            "",
-            "# %%",
-            "",
-        ])
+        # --- Summary / Findings cell ---
+        if kind in ("demo", "validate"):
+            L.extend([
+                "# %% [markdown]",
+                "# ## Summary",
+                "#",
+                "# Summarize results here.",
+                "",
+                "# %%",
+                "",
+            ])
+        else:
+            L.extend([
+                "# %% [markdown]",
+                "# ## Findings",
+                "#",
+                "# Summarize results here. These feed into theory.md.",
+                "",
+                "# %%",
+                "",
+            ])
 
         return "\n".join(L)
 
