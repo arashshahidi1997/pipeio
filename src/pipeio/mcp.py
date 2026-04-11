@@ -6069,8 +6069,8 @@ def mcp_run(
             ``["conda", "run", "-n", "cogpy", "snakemake"]``).
             Defaults to ``["snakemake"]``.
         wildcards: Entity filters for scoping runs (e.g.
-            ``{"subject": "01", "session": "04"}``).  Passed as
-            ``--config key=value`` overrides to Snakemake.
+            ``{"subject": "01", "session": "04"}``).  Maps to
+            snakebids ``--filter-{key} {value}`` CLI flags.
     """
     import json
     import shutil
@@ -6115,14 +6115,17 @@ def mcp_run(
         "--snakefile", str(snakefile),
         "--directory", str(flow_dir),
         "--cores", str(cores),
+        "--rerun-incomplete",
+        "--latency-wait", "15",
     ]
     if dryrun:
         snake_cmd.append("-n")
     if targets:
         snake_cmd.extend(targets)
     if wildcards:
+        # snakebids --filter-{entity} {value} for scoping
         for key, value in wildcards.items():
-            snake_cmd.extend(["--config", f"{key}={value}"])
+            snake_cmd.extend([f"--filter-{key}", str(value)])
     if extra_args:
         snake_cmd.extend(extra_args)
 

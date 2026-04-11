@@ -66,14 +66,17 @@ Each mod has up to three doc facets in `{flow}/docs/{mod}/`:
 
 ### Notebook Workspaces
 
-Notebooks live in two parallel workspaces within a flow:
+Notebooks live in two parallel workspaces within a flow and support multiple backends:
 
 - **`notebooks/explore/`** — prototypes, investigations. Never published. Findings feed theory.md.
 - **`notebooks/demo/`** — showcases mod outputs. Published to site as HTML.
 
-Both use `.src/` + `.myst/` + `.ipynb` layout. Kind routing:
+Both use `.src/` + `.myst/` + `.ipynb` layout for percent-format notebooks. Kind routing:
 - `investigate`, `explore` → `explore/` workspace
 - `demo`, `validate` → `demo/` workspace
+- `interactive` → `explore/` workspace (marimo-only, persists by design)
+
+**Multi-backend support:** Notebooks declare `format:` in `notebook.yml` (`"percent"` for jupytext, `"marimo"` for reactive). Auto-detected when empty. Marimo notebooks are single-file (no `.ipynb`/`.myst` pairing), validated via `marimo check`, and executed via `marimo run`. The `NotebookBackend` protocol in `notebook/backend.py` abstracts format-specific operations.
 
 ### Derivative Manifest
 
@@ -163,11 +166,11 @@ pipeio docs nav                          — generate MkDocs nav fragment
 
 ### MCP Tool Surface
 
-Tools exposed via projio's MCP server (44 tools across 10 categories):
+Tools exposed via projio's MCP server (57 tools across 10 categories):
 
 **Flow & registry (4):** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_registry_scan`, `pipeio_registry_validate`
 
-**Notebook lifecycle (15):** `pipeio_nb_status`, `pipeio_nb_create`, `pipeio_nb_update`, `pipeio_nb_move`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`
+**Notebook lifecycle (19):** `pipeio_nb_status`, `pipeio_nb_create` (accepts `format` param), `pipeio_nb_update`, `pipeio_nb_move`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`, `pipeio_nb_promote`, `pipeio_nb_report`, `pipeio_nb_validate` (structural validation for percent and marimo), `pipeio_nb_watch` (marimo live editing)
 
 **Mod management (4):** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_context`, `pipeio_mod_create`
 
@@ -203,9 +206,12 @@ src/pipeio/
 ├── mcp.py               # MCP tool functions (called by projio MCP server)
 ├── notebook/
 │   ├── __init__.py
-│   ├── config.py        # NotebookConfig (notebook.yml model)
-│   ├── lifecycle.py     # pair, sync, status, lab, publish
-│   └── analyze.py       # Static notebook analysis
+│   ├── backend.py       # NotebookBackend protocol, registry, format detection
+│   ├── backend_percent.py  # Jupytext percent-format backend
+│   ├── backend_marimo.py   # Marimo reactive backend (optional)
+│   ├── config.py        # NotebookConfig (notebook.yml model, format field)
+│   ├── lifecycle.py     # pair, sync, status, lab, publish (dispatches via backend)
+│   └── analyze.py       # Static notebook analysis (format-aware cell splitting)
 ├── scaffold/
 │   └── __init__.py      # Flow/mod scaffolding
 ├── adapters/
