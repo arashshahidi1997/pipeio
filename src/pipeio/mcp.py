@@ -376,6 +376,8 @@ def mcp_flow_fork(
 def mcp_flow_new(
     root: Path,
     flow: str,
+    *,
+    pipelines_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Scaffold a new pipeline flow with standard directory structure.
 
@@ -389,6 +391,8 @@ def mcp_flow_new(
     Args:
         root: Project root.
         flow: Flow name (must be a valid slug: lowercase, underscores).
+        pipelines_dir: Explicit pipelines directory. When ``None``,
+            falls back to filesystem discovery.
     """
     from pipeio.registry import slug_ok
 
@@ -396,12 +400,13 @@ def mcp_flow_new(
         return {"error": f"Invalid flow name: {flow!r}. Use lowercase letters, digits, and underscores."}
 
     # Determine pipelines directory
-    if (root / "code" / "pipelines").exists():
-        pipelines_dir = root / "code" / "pipelines"
-    elif (root / "pipelines").exists():
-        pipelines_dir = root / "pipelines"
-    else:
-        pipelines_dir = root / "code" / "pipelines"
+    if pipelines_dir is None:
+        if (root / "code" / "pipelines").exists():
+            pipelines_dir = root / "code" / "pipelines"
+        elif (root / "pipelines").exists():
+            pipelines_dir = root / "pipelines"
+        else:
+            pipelines_dir = root / "code" / "pipelines"
 
     flow_dir = pipelines_dir / flow
     is_new = not flow_dir.exists()
@@ -1245,17 +1250,28 @@ def mcp_mod_context(
     }
 
 
-def mcp_registry_scan(root: Path) -> dict[str, Any]:
-    """Scan the filesystem for pipelines and rebuild the registry."""
+def mcp_registry_scan(
+    root: Path,
+    *,
+    pipelines_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Scan the filesystem for pipelines and rebuild the registry.
+
+    Args:
+        root: Project root.
+        pipelines_dir: Explicit pipelines directory. When ``None``,
+            falls back to filesystem discovery.
+    """
     from pipeio.registry import PipelineRegistry
 
     # Determine pipelines directory (same logic as CLI)
-    if (root / "code" / "pipelines").exists():
-        pipelines_dir = root / "code" / "pipelines"
-    elif (root / "pipelines").exists():
-        pipelines_dir = root / "pipelines"
-    else:
-        return {"error": "No pipelines directory found (checked code/pipelines/ and pipelines/)"}
+    if pipelines_dir is None:
+        if (root / "code" / "pipelines").exists():
+            pipelines_dir = root / "code" / "pipelines"
+        elif (root / "pipelines").exists():
+            pipelines_dir = root / "pipelines"
+        else:
+            return {"error": "No pipelines directory found (checked code/pipelines/ and pipelines/)"}
 
     docs_dir = None
     if (root / "docs" / "explanation" / "pipelines").exists():
@@ -1391,12 +1407,22 @@ def mcp_modkey_bib(
     }
 
 
-def mcp_docs_collect(root: Path) -> dict[str, Any]:
-    """Collect flow-local docs and notebook outputs into docs/pipelines/ (build artifact, gitignored)."""
+def mcp_docs_collect(
+    root: Path,
+    *,
+    docs_base: Path | None = None,
+) -> dict[str, Any]:
+    """Collect flow-local docs and notebook outputs into docs/pipelines/ (build artifact, gitignored).
+
+    Args:
+        root: Project root.
+        docs_base: Explicit output directory. When ``None``, defaults to
+            ``<root>/docs/pipelines/``.
+    """
     from pipeio.docs import docs_collect
 
     try:
-        collected = docs_collect(root)
+        collected = docs_collect(root, docs_base=docs_base)
     except ImportError as exc:
         return {"error": str(exc)}
     except Exception as exc:
@@ -1408,7 +1434,12 @@ def mcp_docs_collect(root: Path) -> dict[str, Any]:
     }
 
 
-def mcp_docs_nav(root: Path, *, write: bool = True) -> dict[str, Any]:
+def mcp_docs_nav(
+    root: Path,
+    *,
+    write: bool = True,
+    docs_base: Path | None = None,
+) -> dict[str, Any]:
     """Generate MkDocs nav for docs/pipelines/ and write monorepo sub-mkdocs.yml.
 
     When ``write=True`` (default), writes ``docs/pipelines/mkdocs.yml`` for the
@@ -1417,11 +1448,18 @@ def mcp_docs_nav(root: Path, *, write: bool = True) -> dict[str, Any]:
         - Pipelines: '!include ./docs/pipelines/mkdocs.yml'
 
     This is set up automatically by ``projio sync``.
+
+    Args:
+        root: Project root.
+        write: Whether to write the mkdocs.yml file.
+        docs_base: Explicit docs/pipelines directory. When ``None``,
+            defaults to ``<root>/docs/pipelines/``.
     """
     from pipeio.docs import docs_nav
 
-    fragment = docs_nav(root, write=write)
-    sub_mkdocs = root / "docs" / "pipelines" / "mkdocs.yml"
+    resolved_base = docs_base if docs_base is not None else root / "docs" / "pipelines"
+    fragment = docs_nav(root, write=write, docs_base=docs_base)
+    sub_mkdocs = resolved_base / "mkdocs.yml"
     return {
         "nav_fragment": fragment,
         "sub_mkdocs": str(sub_mkdocs.relative_to(root)) if sub_mkdocs.exists() else None,

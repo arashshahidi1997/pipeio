@@ -462,7 +462,12 @@ def _find_registry(root: Path) -> Path | None:
     return find_registry(root)
 
 
-def docs_collect(root: Path, *, export: bool = True) -> list[str]:
+def docs_collect(
+    root: Path,
+    *,
+    export: bool = True,
+    docs_base: Path | None = None,
+) -> list[str]:
     """Collect flow-local docs and notebook outputs into ``docs/pipelines/``.
 
     Two-phase pipeline:
@@ -477,6 +482,12 @@ def docs_collect(root: Path, *, export: bool = True) -> list[str]:
     Pass ``export=False`` to skip generation when exports were already
     produced independently (e.g. via MCP tools or CI).
 
+    Args:
+        root: Project root.
+        export: Whether to run the export phase first.
+        docs_base: Explicit output directory for collected docs. When
+            ``None``, defaults to ``<root>/docs/pipelines/``.
+
     Returns list of collected file paths.
     """
     from pipeio.registry import PipelineRegistry
@@ -486,7 +497,8 @@ def docs_collect(root: Path, *, export: bool = True) -> list[str]:
         return []
 
     registry = PipelineRegistry.from_yaml(registry_path)
-    docs_base = root / "docs" / "pipelines"
+    if docs_base is None:
+        docs_base = root / "docs" / "pipelines"
     collected: list[str] = []
 
     # Generate top-level index.md for pipelines section
@@ -646,7 +658,12 @@ def _resolve_snakemake_for_docs() -> list[str]:
 # Nav generation
 # ---------------------------------------------------------------------------
 
-def docs_nav(root: Path, *, write: bool = True) -> str:
+def docs_nav(
+    root: Path,
+    *,
+    write: bool = True,
+    docs_base: Path | None = None,
+) -> str:
     """Generate nav for ``docs/pipelines/`` and optionally write the monorepo sub-mkdocs.yml.
 
     When ``write=True`` (default), writes ``docs/pipelines/mkdocs.yml`` — a
@@ -654,9 +671,15 @@ def docs_nav(root: Path, *, write: bool = True) -> str:
     ``!include ./docs/pipelines/mkdocs.yml`` in the root ``mkdocs.yml``.
 
     Always returns the generated YAML string (the nav fragment for legacy use).
+
+    Args:
+        root: Project root.
+        write: Whether to write the mkdocs.yml file.
+        docs_base: Explicit docs/pipelines directory. When ``None``,
+            defaults to ``<root>/docs/pipelines/``.
     """
-    docs_root = root / "docs"
-    docs_base = docs_root / "pipelines"
+    if docs_base is None:
+        docs_base = root / "docs" / "pipelines"
     if not docs_base.exists():
         return "# No docs/pipelines/ directory found.\n"
 
