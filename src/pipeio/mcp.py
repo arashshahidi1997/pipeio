@@ -5163,7 +5163,11 @@ def _resolve_nb_with_config(
     except (KeyError, ValueError):
         return None, None, None
 
-    flow_dir = Path(flow_entry.code_path)
+    code_path = flow_entry.code_path
+    if not code_path:
+        return None, None, None
+
+    flow_dir = Path(code_path)
     if not flow_dir.is_absolute():
         flow_dir = root / flow_dir
 
@@ -5292,6 +5296,7 @@ def mcp_nb_snapshot(
     name: str,
     timeout: int = 120,
     max_text_length: int = 2000,
+    python_bin: str = "",
 ) -> dict[str, Any]:
     """Capture a marimo session snapshot: execute all cells and return outputs.
 
@@ -5309,6 +5314,10 @@ def mcp_nb_snapshot(
         name: Notebook stem name.
         timeout: Execution timeout in seconds (default 120).
         max_text_length: Truncate text outputs longer than this (default 2000).
+        python_bin: Python binary where marimo is installed. Use this when
+            marimo needs to run in a different env than the MCP server
+            (e.g. ``"conda run -n cogpy python"`` for project compute libs).
+            Empty string = use the MCP server's own Python.
 
     Returns:
         dict with ``cells`` (list of cell summaries), ``errors`` (bool),
@@ -5316,7 +5325,6 @@ def mcp_nb_snapshot(
     """
     import json as _json
     import subprocess as sp
-    import tempfile
 
     from pipeio.notebook.backend import resolve_backend
 
@@ -5335,58 +5343,60 @@ def mcp_nb_snapshot(
             "For percent-format, use nb_exec + nb_read to inspect ipynb outputs.",
         }
 
-    # Run marimo export session to a temp dir
-    with tempfile.TemporaryDirectory() as tmpdir:
-        session_dir = Path(tmpdir) / "__marimo__" / "session"
-        cmd = [
-            *backend._marimo_cmd, "export", "session",
-            str(py_path),
-            "--force-overwrite",
-        ]
+    # Resolve marimo command
+    if python_bin:
+        # User-specified Python (e.g. "conda run -n cogpy python")
+        marimo_cmd = python_bin.split() + ["-m", "marimo"]
+    else:
+        marimo_cmd = getattr(backend, "_marimo_cmd", None) or ["marimo"]
 
-        try:
-            result = sp.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=str(py_path.parent),
-                env={**__import__("os").environ, "MARIMO_SESSION_DIR": str(session_dir)},
-            )
-        except sp.TimeoutExpired:
-            return {"error": f"Snapshot timed out after {timeout}s"}
-        except FileNotFoundError:
-            return {"error": "marimo command not found"}
+    # Run marimo export session — writes __marimo__/session/<name>.json next to notebook
+    session_dir = py_path.parent / "__marimo__" / "session"
+    session_json_name = f"{py_path.name}.json"
+    expected_json = session_dir / session_json_name
 
-        # Find the session JSON — marimo writes to __marimo__/session/ next to the notebook
-        # or in the working directory
-        session_json = None
-        for candidate_dir in [
-            py_path.parent / "__marimo__" / "session",
-            session_dir,
-            Path(tmpdir),
-        ]:
-            if candidate_dir.exists():
-                for f in candidate_dir.glob("*.json"):
-                    session_json = f
-                    break
-            if session_json:
-                break
+    cmd = [
+        *marimo_cmd, "export", "session",
+        str(py_path),
+        "--force-overwrite",
+    ]
 
-        if session_json is None:
-            # Try parsing stdout as JSON (some versions output to stdout)
-            stderr_text = result.stderr[-1000:] if result.stderr else ""
-            return {
-                "error": f"Session snapshot not found after export. "
-                f"returncode={result.returncode}",
-                "stderr": stderr_text,
-                "stdout": result.stdout[-500:] if result.stdout else "",
-            }
+    try:
+        result = sp.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(py_path.parent),
+        )
+    except sp.TimeoutExpired:
+        return {"error": f"Snapshot timed out after {timeout}s"}
+    except FileNotFoundError:
+        return {"error": f"marimo command not found: {marimo_cmd[0]}"}
 
-        try:
-            snapshot = _json.loads(session_json.read_text(encoding="utf-8"))
-        except Exception as exc:
-            return {"error": f"Failed to parse session JSON: {exc}"}
+    # Find the session JSON
+    session_json = None
+    if expected_json.exists():
+        session_json = expected_json
+    elif session_dir.exists():
+        # Fallback: any .json in the session dir
+        for f in session_dir.glob("*.json"):
+            session_json = f
+            break
+
+    if session_json is None:
+        stderr_text = result.stderr[-1000:] if result.stderr else ""
+        return {
+            "error": "Session snapshot not found after export. "
+            f"returncode={result.returncode}",
+            "stderr": stderr_text,
+            "stdout": result.stdout[-500:] if result.stdout else "",
+        }
+
+    try:
+        snapshot = _json.loads(session_json.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"error": f"Failed to parse session JSON: {exc}"}
 
     # Parse snapshot into agent-friendly summary
     cells_summary: list[dict[str, Any]] = []
@@ -5415,7 +5425,7 @@ def mcp_nb_snapshot(
                 cell_info["error"] = {
                     "name": output.get("ename", ""),
                     "message": output.get("evalue", ""),
-                    "traceback": output.get("traceback", [])[-5:],  # last 5 frames
+                    "traceback": (output.get("traceback") or [])[-5:],
                 }
                 error_count += 1
             elif output.get("type") == "data":
