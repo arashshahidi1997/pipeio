@@ -6050,6 +6050,11 @@ def mcp_run(
     targets: list[str] | None = None,
     cores: int = 1,
     dryrun: bool = False,
+    keep_going: bool = True,
+    forcerun: list[str] | None = None,
+    forceall: bool = False,
+    touch: bool = False,
+    retries: int = 0,
     extra_args: list[str] | None = None,
     snakemake_cmd: list[str] | None = None,
     wildcards: dict[str, str] | None = None,
@@ -6064,6 +6069,13 @@ def mcp_run(
         targets: Snakemake target rules (optional).
         cores: Number of cores (default 1).
         dryrun: If True, pass ``-n`` for a dry run.
+        keep_going: Continue with independent jobs after a failure
+            (default True).
+        forcerun: Force re-execution of specific rules (e.g.
+            ``["badlabel", "interpolate"]``).
+        forceall: Force execution of all rules regardless of timestamps.
+        touch: Mark outputs as up-to-date without executing (``-t``).
+        retries: Number of times to retry failing jobs (default 0).
         extra_args: Additional Snakemake CLI arguments.
         snakemake_cmd: Command tokens to invoke snakemake (e.g.
             ``["conda", "run", "-n", "cogpy", "snakemake"]``).
@@ -6115,11 +6127,24 @@ def mcp_run(
         "--snakefile", str(snakefile),
         "--directory", str(flow_dir),
         "--cores", str(cores),
+        # Always-on robustness flags
         "--rerun-incomplete",
         "--latency-wait", "15",
+        "--printshellcmds",
+        "--show-failed-logs",
     ]
+    if keep_going:
+        snake_cmd.append("--keep-going")
     if dryrun:
         snake_cmd.append("-n")
+    if touch:
+        snake_cmd.append("--touch")
+    if forceall:
+        snake_cmd.append("--forceall")
+    elif forcerun:
+        snake_cmd.extend(["--forcerun", *forcerun])
+    if retries > 0:
+        snake_cmd.extend(["--retries", str(retries)])
     if targets:
         snake_cmd.extend(targets)
     if wildcards:

@@ -359,11 +359,15 @@ def _cmd_flow_run(args: argparse.Namespace) -> int:
 
     result = mcp_run(
         root,
-        pipe=entry.name,
         flow=entry.name,
         targets=getattr(args, "targets", None) or None,
         cores=getattr(args, "cores", 1),
         dryrun=getattr(args, "dryrun", False),
+        keep_going=not getattr(args, "no_keep_going", False),
+        forcerun=getattr(args, "forcerun", None),
+        forceall=getattr(args, "forceall", False),
+        touch=getattr(args, "touch", False),
+        retries=getattr(args, "retries", 0),
         snakemake_cmd=_resolve_snakemake(),
         wildcards=wildcards or None,
     )
@@ -1190,6 +1194,11 @@ def main(argv: list[str] | None = None) -> int:
     flow_run.add_argument("targets", nargs="*", help="Snakemake target rules")
     flow_run.add_argument("--cores", "-c", type=int, default=1, help="Number of cores")
     flow_run.add_argument("--dryrun", "-n", action="store_true", help="Dry run")
+    flow_run.add_argument("--no-keep-going", action="store_true", help="Stop on first failure (default: keep going)")
+    flow_run.add_argument("--forcerun", "-R", nargs="+", help="Force re-execution of specific rules")
+    flow_run.add_argument("--forceall", "-F", action="store_true", help="Force all rules regardless of timestamps")
+    flow_run.add_argument("--touch", "-t", action="store_true", help="Mark outputs as up-to-date without executing")
+    flow_run.add_argument("--retries", "-T", type=int, default=0, help="Retry failing jobs N times")
     flow_run.add_argument("--filter", "-f", action="append", help="Wildcard filter (key=value, repeatable)")
 
     flow_log = flow_sub.add_parser("log", help="Tail the latest run log for a flow")
