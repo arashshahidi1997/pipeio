@@ -503,9 +503,9 @@ def _cmd_flow_report(args: argparse.Namespace) -> int:
     if entry is None:
         return 1
 
-    from pipeio.mcp import mcp_report
+    from pipeio.mcp import mcp_flow_report
 
-    result = mcp_report(
+    result = mcp_flow_report(
         root,
         flow=entry.name,
         target=getattr(args, "target", "") or "",
@@ -517,8 +517,118 @@ def _cmd_flow_report(args: argparse.Namespace) -> int:
         return 1
 
     print(f"  report:  {result['report_path']}")
-    print(f"  size:    {result.get('size_kb', 0)} KB")
+    print(f"  size:    {result.get('size_mb', 0)} MB")
     print(f"  targets: {result.get('targets_resolved', 0)} outputs resolved")
+    if result.get("warnings"):
+        print("  warnings:")
+        for w in result["warnings"]:
+            print(f"    - {w}")
+    return 0
+
+
+def _cmd_flow_audit(args: argparse.Namespace) -> int:
+    """Audit a flow (or all flows) for pipeline-docs.md spec compliance."""
+    import json as _json
+
+    root = Path(args.root) if args.root else _find_root()
+    from pipeio.mcp import mcp_flow_audit
+
+    # "all" mode — iterate registered flows
+    if args.flow == "all":
+        registry = _load_registry(root)
+        if registry is None:
+            return 1
+        flow_names = [f.name for f in registry.list_flows()]
+        results = [mcp_flow_audit(root, f) for f in flow_names]
+        if getattr(args, "json", False):
+            print(_json.dumps(results, indent=2))
+            return 0
+        # Summary table
+        compliant = sum(1 for r in results if r.get("compliant"))
+        print(f"  {compliant}/{len(results)} flows compliant\n")
+        for r in results:
+            if "error" in r:
+                print(f"  [ERR] {r.get('flow', '?')}: {r['error']}")
+                continue
+            mark = "OK " if r["compliant"] else "FAIL"
+            issue_count = len(r.get("issues", []))
+            print(f"  [{mark}] {r['flow']}  ({issue_count} issue{'s' if issue_count != 1 else ''})")
+            for iss in r.get("issues", [])[:3]:
+                print(f"         - {iss}")
+            if issue_count > 3:
+                print(f"         ... and {issue_count - 3} more")
+        return 0 if compliant == len(results) else 1
+
+    entry = _resolve_flow(root, args.flow)
+    if entry is None:
+        return 1
+
+    result = mcp_flow_audit(root, flow=entry.name)
+    if getattr(args, "json", False):
+        print(_json.dumps(result, indent=2))
+        return 0
+
+    if "error" in result:
+        print(f"Error: {result['error']}", file=sys.stderr)
+        return 1
+
+    # Pretty print
+    mark = "OK" if result["compliant"] else "FAIL"
+    print(f"  flow:     {result['flow']}  [{mark}]")
+    print(f"  dir:      {result['flow_dir']}")
+    print()
+
+    print("  Scaffold files:")
+    for fname, ok in result["files"].items():
+        icon = "+" if ok else "-"
+        print(f"    [{icon}] {fname}")
+    print()
+
+    docs = result["docs"]
+    if docs["dir_exists"]:
+        if docs["index_md"]:
+            print("  docs/index.md: present")
+        elif docs["legacy_overview_md"]:
+            print("  docs/index.md: MISSING (legacy overview.md exists)")
+        else:
+            print("  docs/index.md: MISSING")
+
+        if docs.get("sections"):
+            print("  Canonical sections in docs/index.md:")
+            for sec, present in docs["sections"].items():
+                icon = "+" if present else "-"
+                print(f"    [{icon}] {sec}")
+    else:
+        print("  docs/: MISSING")
+    print()
+
+    if result.get("mods"):
+        print("  Mod facet dirs:")
+        for mod, facets in result["mods"].items():
+            parts = []
+            for facet, ok in facets.items():
+                if ok or facet != "delta":  # delta is optional
+                    icon = "+" if ok else "-"
+                    parts.append(f"[{icon}]{facet}")
+            print(f"    {mod}: {' '.join(parts)}")
+        print()
+
+    issues = result.get("issues", [])
+    suggestions = result.get("suggestions", [])
+    if issues:
+        print(f"  Issues ({len(issues)}):")
+        for i in issues:
+            print(f"    - {i}")
+        print()
+    if suggestions:
+        print(f"  Suggestions ({len(suggestions)}):")
+        for s in suggestions:
+            print(f"    - {s}")
+        print()
+
+    if not result["compliant"]:
+        print(f"  Fix: {result['fix_hint']}")
+        return 1
     return 0
 
 
@@ -1217,6 +1327,10 @@ def main(argv: list[str] | None = None) -> int:
     flow_report.add_argument("flow", help="Flow name")
     flow_report.add_argument("--target", help="Explicit target rule (overrides auto-resolution)")
 
+    flow_audit = flow_sub.add_parser("audit", help="Audit a flow's compliance with pipeline-docs.md spec")
+    flow_audit.add_argument("flow", help="Flow name (or 'all' to audit every registered flow)")
+    flow_audit.add_argument("--json", action="store_true", help="Output raw JSON")
+
     # pipeio nb {pair,sync,exec,publish,status}
     nb_p = sub.add_parser("nb", help="Notebook lifecycle")
     nb_p.add_argument("--root", dest="root", help="Project root")
@@ -1318,6 +1432,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_flow_dag(args)
         if args.flow_command == "report":
             return _cmd_flow_report(args)
+        if args.flow_command == "audit":
+            return _cmd_flow_audit(args)
         flow_p.print_help()
         return 0
 

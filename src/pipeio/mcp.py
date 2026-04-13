@@ -233,6 +233,172 @@ def mcp_flow_status(root: Path, flow: str) -> dict[str, Any]:
     return result
 
 
+# Canonical sections for docs/index.md per pipeline-docs.md spec.
+# Keys are the exact H2 headers a compliant flow should have.
+_CANONICAL_INDEX_SECTIONS = (
+    "Purpose",
+    "Input",
+    "Output",
+    "Mod Chain",
+    "Design Decisions",
+    "Data Availability",
+    "DAG",
+    "Report",
+    "Changelog",
+    "Known Gaps",
+)
+
+
+def mcp_flow_audit(root: Path, flow: str) -> dict[str, Any]:
+    """Audit a flow's compliance with the pipeline-docs.md spec.
+
+    Read-only diagnostic — never modifies anything.  Reports which
+    scaffolded files exist, which canonical sections are present in the
+    flow's ``docs/index.md``, and which mod facet dirs have theory/spec/delta
+    pairs.
+
+    Use this before running ``pipeio flow new <flow>`` on an existing flow
+    to see exactly what will be added (flow_new is idempotent and only
+    writes missing files).
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+    """
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if not registry_path:
+        return _NO_REGISTRY
+
+    registry = PipelineRegistry.from_yaml(registry_path)
+    try:
+        entry = registry.get(flow)
+    except (KeyError, ValueError) as exc:
+        return {"error": str(exc)}
+
+    flow_dir = Path(entry.code_path)
+    if not flow_dir.is_absolute():
+        flow_dir = root / flow_dir
+    if not flow_dir.is_dir():
+        return {"error": f"Flow directory not found: {flow_dir}"}
+
+    issues: list[str] = []
+    suggestions: list[str] = []
+
+    # --- Scaffolded files at flow root ---
+    files_status = {}
+    for fname in ("Snakefile", "config.yml", "publish.yml", "CHANGELOG.md"):
+        exists = (flow_dir / fname).exists()
+        files_status[fname] = exists
+        if not exists:
+            if fname in ("publish.yml", "CHANGELOG.md"):
+                issues.append(f"Missing {fname} (run: pipeio flow new {flow})")
+            elif fname == "Snakefile":
+                issues.append(f"Missing {fname} — flow is not runnable")
+            elif fname == "config.yml":
+                issues.append(f"Missing {fname} — no flow config")
+
+    # --- docs/ tree ---
+    docs_dir = flow_dir / "docs"
+    docs_status: dict[str, Any] = {
+        "dir_exists": docs_dir.is_dir(),
+        "index_md": False,
+        "legacy_overview_md": False,
+        "sections": {},
+    }
+
+    if docs_dir.is_dir():
+        docs_index = docs_dir / "index.md"
+        legacy = docs_dir / "overview.md"
+        docs_status["index_md"] = docs_index.exists()
+        docs_status["legacy_overview_md"] = legacy.exists()
+
+        if not docs_index.exists() and legacy.exists():
+            issues.append(
+                "docs/overview.md is legacy — rename to docs/index.md or "
+                "run: pipeio flow new " + flow
+            )
+
+        # Parse the index for canonical section headers
+        target = docs_index if docs_index.exists() else legacy
+        if target.exists():
+            text = target.read_text(encoding="utf-8")
+            sections_present = {}
+            for sec in _CANONICAL_INDEX_SECTIONS:
+                sections_present[sec] = (f"## {sec}" in text)
+            docs_status["sections"] = sections_present
+
+            missing = [s for s, p in sections_present.items() if not p]
+            if missing:
+                issues.append(
+                    f"docs/index.md missing sections: {', '.join(missing)}"
+                )
+
+            # Check for DAG image reference and changelog link when sections exist
+            if sections_present.get("DAG") and "dag.svg" not in text:
+                suggestions.append(
+                    "## DAG section exists but has no ![](dag.svg) link — "
+                    "run: pipeio flow dag " + flow
+                )
+            if sections_present.get("Changelog") and "changelog.md" not in text:
+                suggestions.append(
+                    "## Changelog section exists but has no link to changelog.md"
+                )
+    else:
+        issues.append("Missing docs/ directory")
+
+    # --- Mod facet directories ---
+    mods_status: dict[str, dict[str, bool]] = {}
+    if docs_dir.is_dir():
+        for mod_subdir in sorted(d for d in docs_dir.iterdir() if d.is_dir()):
+            # A mod facet dir has at least one of theory/spec/delta.md
+            facets = {
+                "theory": (mod_subdir / "theory.md").exists(),
+                "spec": (mod_subdir / "spec.md").exists(),
+                "delta": (mod_subdir / "delta.md").exists(),
+            }
+            if any(facets.values()):
+                mods_status[mod_subdir.name] = facets
+                if not facets["theory"]:
+                    issues.append(f"Mod {mod_subdir.name}: missing theory.md")
+                if not facets["spec"]:
+                    issues.append(f"Mod {mod_subdir.name}: missing spec.md")
+
+    # --- Notebook config ---
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    nb_status = {"config_exists": nb_cfg_path.exists()}
+
+    # --- CHANGELOG content sanity check ---
+    changelog_path = flow_dir / "CHANGELOG.md"
+    if changelog_path.exists():
+        changelog_text = changelog_path.read_text(encoding="utf-8")
+        has_unreleased = "## Unreleased" in changelog_text
+        # Count dated entries (## YYYY-MM-DD)
+        import re as _re
+        dated_entries = _re.findall(r"^## \d{4}-\d{2}-\d{2}", changelog_text, _re.MULTILINE)
+        nb_status = {**nb_status, "changelog_entries": len(dated_entries)}
+        if not has_unreleased and not dated_entries:
+            suggestions.append(
+                "CHANGELOG.md has no ## Unreleased section or dated entries"
+            )
+
+    compliant = len(issues) == 0
+
+    return {
+        "flow": entry.name,
+        "flow_dir": str(flow_dir.relative_to(root)) if flow_dir.is_relative_to(root) else str(flow_dir),
+        "compliant": compliant,
+        "files": files_status,
+        "docs": docs_status,
+        "mods": mods_status,
+        "notebook": nb_status,
+        "issues": issues,
+        "suggestions": suggestions,
+        "fix_hint": f"Run 'pipeio flow new {flow}' to non-destructively scaffold missing files.",
+    }
+
+
 def mcp_flow_deregister(
     root: Path,
     flow: str,
@@ -4623,11 +4789,11 @@ def mcp_nb_promote(
 
 
 # ---------------------------------------------------------------------------
-# MCP tools: notebook report extraction
+# MCP tools: notebook figure extraction
 # ---------------------------------------------------------------------------
 
 
-def _nb_report_percent(
+def _nb_extract_percent(
     root: Path,
     flow_name: str,
     flow_dir: Path,
@@ -4847,7 +5013,7 @@ def _nb_report_percent(
     return result
 
 
-def _nb_report_marimo(
+def _nb_extract_marimo(
     root: Path,
     flow_name: str,
     flow_dir: Path,
@@ -4955,7 +5121,7 @@ def _nb_report_marimo(
     }
 
 
-def mcp_nb_report(
+def mcp_nb_extract(
     root: Path,
     flow: str,
     name: str,
@@ -4977,7 +5143,7 @@ def mcp_nb_report(
     hint on how to produce static alternatives.
 
     The report ``.md`` is **not** created by this tool — that is the agent's
-    responsibility (via the ``/report`` skill or manual writing).
+    responsibility (via the ``pipeio-nb-extract`` skill or manual writing).
 
     Args:
         root: Project root.
@@ -5028,12 +5194,12 @@ def mcp_nb_report(
         fmt = detect_format(py_path)
 
     if fmt == "marimo":
-        return _nb_report_marimo(
+        return _nb_extract_marimo(
             root, entry.name, flow_dir, py_path, name,
             overwrite=overwrite, tags_only=tags_only,
         )
 
-    return _nb_report_percent(
+    return _nb_extract_percent(
         root, entry.name, flow_dir, py_path, name,
         overwrite=overwrite, tags_only=tags_only, kernel=kernel,
     )
@@ -5678,7 +5844,7 @@ def mcp_dag_export(
     return result_dict
 
 
-def mcp_report(
+def mcp_flow_report(
     root: Path,
     flow: str | None = None,
     output_path: str = "",
@@ -5778,6 +5944,46 @@ def mcp_report(
             "Run the pipeline first, or specify a target rule.",
         }
 
+    # Pre-flight: sum embedded target sizes. Snakemake inlines every
+    # target as base64 in the HTML, so dense SVGs can produce multi-GB
+    # reports. Reject above the hard limit, warn above the soft one.
+    preflight_warnings: list[str] = []
+    sized: list[tuple[int, str]] = []
+    for t in targets:
+        tp = Path(t)
+        if not tp.is_absolute():
+            tp = flow_dir / t
+        try:
+            sized.append((tp.stat().st_size, t))
+        except OSError:
+            continue
+    total_bytes = sum(s for s, _ in sized)
+    total_mb = total_bytes / (1024 * 1024)
+    top = sorted(sized, reverse=True)[:5]
+    top_offenders = [
+        {"path": p, "size_mb": round(s / (1024 * 1024), 1)} for s, p in top
+    ]
+
+    if total_mb > max_embed_mb and not force:
+        return {
+            "error": (
+                f"Pre-flight: resolved targets total {total_mb:.1f} MB, "
+                f"exceeds max_embed_mb={max_embed_mb}. Snakemake embeds "
+                "every target as base64, so the report would be even "
+                "larger. Rasterize dense plots to PNG (see pipeio-guide "
+                "dual-output pattern), narrow --target, or pass force=True."
+            ),
+            "total_embed_mb": round(total_mb, 1),
+            "targets_resolved": len(targets),
+            "top_offenders": top_offenders,
+        }
+
+    if total_mb > warn_embed_mb:
+        preflight_warnings.append(
+            f"Resolved targets total {total_mb:.1f} MB; report may be "
+            f"heavy. Consider rasterizing dense plots to PNG."
+        )
+
     # Build command
     cmd = [
         *snake_base,
@@ -5798,13 +6004,29 @@ def mcp_report(
     if result.returncode != 0:
         return {"error": f"Snakemake report failed: {result.stderr[:1000]}"}
 
-    return {
+    report_size_mb = (
+        round(report_abs.stat().st_size / (1024 * 1024), 1)
+        if report_abs.exists()
+        else 0
+    )
+    if report_size_mb > warn_embed_mb:
+        preflight_warnings.append(
+            f"Generated report is {report_size_mb} MB. Consider the dual "
+            "SVG/PNG output pattern for plot rules (pipeio-guide)."
+        )
+
+    result_payload: dict[str, Any] = {
         "flow": entry.name,
         "report_path": output_path,
         "exists": report_abs.exists(),
-        "size_kb": round(report_abs.stat().st_size / 1024, 1) if report_abs.exists() else 0,
+        "size_mb": report_size_mb,
         "targets_resolved": len(targets),
+        "embed_total_mb": round(total_mb, 1),
     }
+    if preflight_warnings:
+        result_payload["warnings"] = preflight_warnings
+        result_payload["top_offenders"] = top_offenders
+    return result_payload
 
 
 # ---------------------------------------------------------------------------

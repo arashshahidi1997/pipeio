@@ -171,7 +171,7 @@ Tools exposed via projio's MCP server (57 tools across 10 categories):
 
 **Flow & registry (4):** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_registry_scan`, `pipeio_registry_validate`
 
-**Notebook lifecycle (20):** `pipeio_nb_status`, `pipeio_nb_create` (accepts `format` param), `pipeio_nb_update`, `pipeio_nb_move`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`, `pipeio_nb_promote`, `pipeio_nb_report`, `pipeio_nb_validate` (structural validation for percent and marimo), `pipeio_nb_watch` (marimo live editing), `pipeio_nb_snapshot` (execute marimo + return cell outputs)
+**Notebook lifecycle (20):** `pipeio_nb_status`, `pipeio_nb_create` (accepts `format` param), `pipeio_nb_update`, `pipeio_nb_move`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`, `pipeio_nb_promote`, `pipeio_nb_extract` (renamed from `pipeio_nb_report`), `pipeio_nb_validate` (structural validation for percent and marimo), `pipeio_nb_watch` (marimo live editing), `pipeio_nb_snapshot` (execute marimo + return cell outputs)
 
 **Mod management (4):** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_context`, `pipeio_mod_create`
 
@@ -185,7 +185,7 @@ Tools exposed via projio's MCP server (57 tools across 10 categories):
 
 **Scaffolding (2):** `pipeio_script_create`, `pipeio_nb_promote`
 
-**DAG & reporting (2):** `pipeio_dag_export`, `pipeio_report`
+**DAG & reporting (2):** `pipeio_dag_export`, `pipeio_flow_report` (renamed from `pipeio_report`; includes size pre-flight to block GB-scale HTML from dense-SVG plots)
 
 **Logging (1):** `pipeio_log_parse`
 
