@@ -99,6 +99,7 @@ class PublishConfig(BaseModel):
     report: bool = False
     report_archive: bool = False
     scripts: bool = False
+    changelog: bool = False
 
     @classmethod
     def from_yaml(cls, path: Path) -> PublishConfig:
@@ -381,6 +382,28 @@ class ReportCollector:
         return collected
 
 
+class ChangelogCollector:
+    """Copy ``CHANGELOG.md`` from flow root to ``changelog.md`` in docs.
+
+    The flow CHANGELOG lives at the flow root (sibling of Snakefile), not
+    under docs/, matching the Python package convention.  Gated by
+    ``publish.changelog``.  See pipeline-docs.md for the convention spec.
+    """
+
+    def collect(self, ctx: CollectContext) -> list[str]:
+        if not ctx.publish.changelog:
+            return []
+
+        src = ctx.flow_dir / "CHANGELOG.md"
+        if not src.exists():
+            return []
+
+        dst = ctx.target / "changelog.md"
+        if _is_stale(src, dst):
+            _copy_with_header(src, dst, ctx.root)
+        return [str(dst)]
+
+
 class ScriptsCollector:
     """Generate a script index page from ``{flow}/scripts/*.py``.
 
@@ -447,6 +470,7 @@ _COLLECTORS: list[Collector] = [
     NotebookCollector(),
     DagCollector(),
     ReportCollector(),
+    ChangelogCollector(),
     ScriptsCollector(),
     IndexCollector(),
 ]

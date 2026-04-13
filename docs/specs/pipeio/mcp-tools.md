@@ -476,9 +476,13 @@ pipeio_run_kill(run_id: str) → dict
 #### `pipeio_docs_collect`
 
 Collect flow-local docs and notebook outputs into `docs/pipelines/`.
+See [pipeline-docs.md](pipeline-docs.md) for the flow `docs/index.md` template,
+per-mod facet routing (`theory.md`, `spec.md`, `delta.md`), flow-level
+`CHANGELOG.md` collection, and the full list of collectors with their
+`publish.yml` gating.
 
 ```
-pipeio_docs_collect() → dict
+pipeio_docs_collect(export: bool = True) → dict
 ```
 
 #### `pipeio_docs_nav`

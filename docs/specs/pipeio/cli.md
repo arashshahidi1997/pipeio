@@ -35,7 +35,7 @@ Flow management.
 
 ```
 pipeio flow list [--pipe PIPE]                          # list all flows
-pipeio flow new <pipe> <flow>                           # scaffold a new flow
+pipeio flow new <flow>                                  # scaffold a new flow (index.md + CHANGELOG.md + publish.yml, see pipeline-docs.md)
 pipeio flow path <flow>                                 # print code directory path
 pipeio flow config <flow>                               # print config path
 pipeio flow deriv <flow>                                # print derivative directory path

@@ -15,6 +15,7 @@ pipeio makes pipeline knowledge (registry, configs, rules, contracts, notebooks)
 | [Path Resolution](path-resolution.md) | `PathResolver` protocol, `PipelineContext`, `Session`, `Stage` | Implemented |
 | [Notebook Lifecycle](notebook.md) | Workspaces (explore/demo), pair, sync, execute, publish, promote | Implemented |
 | [Scaffolding](scaffolding.md) | Flow and mod creation, kind-aware notebooks, tier-aware scripts | Implemented |
+| [Pipeline Docs](pipeline-docs.md) | Flow `docs/index.md` template, mod facets, flow `CHANGELOG.md`, collection pipeline | **Canonical** |
 | [Contracts](contracts.md) | Declarative input/output validation, cross-flow manifest chains | Implemented |
 | [CLI](cli.md) | Command-line interface design | Implemented |
 | [MCP Tools](mcp-tools.md) | Agent-facing tools via projio MCP server | Implemented (50+ tools) |

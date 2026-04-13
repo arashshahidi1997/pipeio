@@ -12,7 +12,7 @@ pipeio is an **agent-facing authoring and discovery layer** for computational pi
 - **Flow configuration** loading and validation
 - **Notebook lifecycle** automation (pair, sync, execute, publish)
 - **Scaffolding** for creating new flows and mods from templates
-- **Documentation** generation and collection
+- **Documentation** generation and collection — see [pipeline-docs.md](pipeline-docs.md) for the flow `docs/index.md` template, per-mod facet convention, and flow `CHANGELOG.md` history spec
 
 ### Delegation model
 
