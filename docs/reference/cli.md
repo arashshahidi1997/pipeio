@@ -72,6 +72,30 @@ Show flow status: config, Snakefile, mods, output groups with file counts.
 pipeio flow status <flow>
 ```
 
+### `pipeio flow audit`
+
+Audit a flow's compliance with the [pipeline-docs.md](../specs/pipeio/pipeline-docs.md)
+spec (read-only). Reports missing scaffold files (CHANGELOG.md, publish.yml,
+etc.), missing canonical sections in `docs/index.md`, and mod facet coverage.
+
+```bash
+pipeio flow audit <flow>         # detailed per-flow report
+pipeio flow audit all            # summary across every registered flow
+pipeio flow audit <flow> --json  # machine-readable output
+```
+
+Exit code is `0` when compliant, `1` otherwise. Use as a precursor to
+`pipeio flow new <flow>` (which is idempotent and adds only missing files).
+
+Typical migration workflow for retrofitting existing flows:
+
+```bash
+pipeio flow audit all               # see which flows fail and why
+pipeio flow new <each-flow>         # scaffold missing CHANGELOG.md / publish.yml
+pipeio flow audit all               # re-check, edit docs/index.md for remaining gaps
+pipeio docs collect                 # rebuild docs/pipelines/
+```
+
 ### `pipeio flow targets`
 
 Resolve output paths for a flow's registry entries. Three modes:
@@ -203,6 +227,7 @@ source /path/to/pipeio/bin/pf.sh
 | `pf <flow> config` | print config path |
 | `pf <flow> deriv` | cd into derivative directory |
 | `pf <flow> status` | show flow status and output summary |
+| `pf <flow> audit` | audit flow docs against pipeline-docs.md spec |
 | `pf <flow> targets [opts]` | resolve output paths |
 | `pf <flow> run [opts]` | launch snakemake in screen session |
 | `pf <flow> log [-n N]` | tail latest run log |

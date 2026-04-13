@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **Pipeline docs spec** — new `docs/specs/pipeio/pipeline-docs.md` canonicalizes flow-level documentation: source tree layout (`docs/index.md` as landing page, per-mod facet dirs with theory/spec/delta, flow-root `CHANGELOG.md`), flow index template with supervisor-facing sections (Final Products table, Rules-annotated Mod Chain, Data Availability, DAG, Report, Changelog, Known Gaps), mod documentation roles, Keep-a-Changelog-style flow CHANGELOG convention with notio note cross-refs, and collection pipeline with `publish.yml` gating. Reference example: `preprocess_motion`. See [commit note](../../docs/log/commit/commit-arash-20260413-175852-000000.md).
+- **`mcp_flow_audit`** (`pipeio_flow_audit`) — read-only compliance check against pipeline-docs.md spec. Reports which scaffolded files exist, which canonical sections are present in `docs/index.md`, and which mod facet dirs have theory/spec pairs. Returns a structured dict with `issues`, `suggestions`, and a `fix_hint`. Exposed as `pipeio flow audit <flow>` / `pipeio flow audit all` CLI and `pf <flow> audit` shell helper. Migration pattern: audit → `pipeio flow new <flow>` (idempotent) → re-audit.
+- **`ChangelogCollector`** in `docs_collect` — copies `CHANGELOG.md` from flow root to `docs/pipelines/<flow>/changelog.md` with source header. Gated by `publish.yml: changelog: true`. Registered in `_COLLECTORS` chain next to `ReportCollector`.
+- **`PublishConfig.changelog` field** — opt-in gate for changelog collection (default False, matching other optional collectors).
+- **`flow_new` richer `docs/index.md` template** — now includes Final Products table, Rules column in Mod Chain, Data Availability, DAG, Report, Changelog, and Known Gaps sections matching the pipeline-docs.md canonical list. Also scaffolds `CHANGELOG.md` at flow root and `publish.yml` with all collector flags set to `true`.
 - **`mcp_nb_report`** — extract figures, markdown, and text outputs from an executed notebook; backend-aware (percent via nbconvert, marimo via `marimo export md`); detects interactive HTML widgets (holoviews, bokeh, plotly) and returns `html_outputs` with remediation hints; saves extracted figures to `{flow}/docs/reports/{name}/`
 - **`mcp_nb_move`** — move a notebook between flows atomically (files + registry update)
 

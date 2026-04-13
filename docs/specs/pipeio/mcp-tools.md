@@ -75,6 +75,50 @@ pipeio_flow_status(pipe: str, flow: str) → dict
 }
 ```
 
+#### `pipeio_flow_audit`
+
+Audit a flow's compliance with [pipeline-docs.md](pipeline-docs.md) (read-only).
+Reports which scaffolded files exist (Snakefile, config.yml, publish.yml,
+CHANGELOG.md), which canonical sections are present in `docs/index.md`, and
+which mod facet dirs have theory.md/spec.md pairs.  Use before running
+`pipeio_flow_new(flow)` on an existing flow to preview what the idempotent
+scaffold would add.
+
+```
+pipeio_flow_audit(flow: str) → dict
+```
+
+**Returns:**
+```json
+{
+  "flow": "brainstate",
+  "flow_dir": "code/pipelines/brainstate",
+  "compliant": false,
+  "files": {"Snakefile": true, "config.yml": true, "publish.yml": true, "CHANGELOG.md": false},
+  "docs": {
+    "dir_exists": true, "index_md": true, "legacy_overview_md": false,
+    "sections": {"Purpose": true, "Input": true, "Output": true, "Mod Chain": true,
+                 "Design Decisions": true, "Data Availability": false,
+                 "DAG": true, "Report": false, "Changelog": false, "Known Gaps": true}
+  },
+  "mods": {"detect": {"theory": true, "spec": true, "delta": false}},
+  "notebook": {"config_exists": true, "changelog_entries": 0},
+  "issues": [
+    "Missing CHANGELOG.md (run: pipeio flow new brainstate)",
+    "docs/index.md missing sections: Data Availability, Report, Changelog"
+  ],
+  "suggestions": [],
+  "fix_hint": "Run 'pipeio flow new brainstate' to non-destructively scaffold missing files."
+}
+```
+
+**Migration pattern** (retrofitting existing flows to the current spec):
+1. `pipeio flow audit all` — see which flows are non-compliant and why.
+2. For each flow with missing scaffold files, `pipeio flow new <flow>` —
+   `flow_new` is idempotent and only writes missing files.
+3. Hand-edit any missing canonical sections in `docs/index.md` (the audit
+   does not inject content into user-authored docs).
+
 #### `pipeio_registry_scan`
 
 Scan the filesystem for pipelines and rebuild the registry.
@@ -517,6 +561,7 @@ For agent instructions (CLAUDE.md / `agent_instructions` tool):
 |--------|----------|--------|
 | List pipelines | `pipeio_flow_list()` | Parse registry YAML manually |
 | Check flow status | `pipeio_flow_status(pipe, flow)` | Read config.yml directly |
+| Audit flow docs compliance | `pipeio_flow_audit(flow)` — read-only; lists missing scaffold files + canonical sections | Manual file-by-file check |
 | Scaffold a new config | `pipeio_config_init(pipe, flow)` | Create config.yml manually |
 | Read config | `pipeio_config_read(pipe, flow)` | Parse config.yml directly |
 | Patch config | `pipeio_config_patch(pipe, flow)` | Edit config.yml directly |

@@ -99,8 +99,12 @@ USAGE
           shift
           $_PF_PIPEIO flow report "$flow" "$@"
           ;;
+        audit)
+          shift
+          $_PF_PIPEIO flow audit "$flow" "$@"
+          ;;
         *)
-          echo "unknown subcommand: $1 (try: smk, path, config, deriv, status, targets, run, log, mods, dag, report)" >&2
+          echo "unknown subcommand: $1 (try: smk, path, config, deriv, status, audit, targets, run, log, mods, dag, report)" >&2
           return 1
           ;;
       esac
@@ -116,7 +120,7 @@ if [ -n "$BASH_VERSION" ]; then
     if [ "$COMP_CWORD" -eq 1 ]; then
       COMPREPLY=($(compgen -W "$($_PF_PIPEIO flow ids 2>/dev/null)" -- "$cur"))
     elif [ "$COMP_CWORD" -eq 2 ]; then
-      COMPREPLY=($(compgen -W "smk path config deriv status targets run log mods dag report" -- "$cur"))
+      COMPREPLY=($(compgen -W "smk path config deriv status audit targets run log mods dag report" -- "$cur"))
     fi
   }
   complete -F _pf pf
@@ -125,7 +129,7 @@ fi
 # Zsh completion for pf
 if [ -n "$ZSH_VERSION" ]; then
   _pf() {
-    local subcmds="smk path config deriv status targets run log mods dag report"
+    local subcmds="smk path config deriv status audit targets run log mods dag report"
     if (( CURRENT == 2 )); then
       compadd $($_PF_PIPEIO flow ids 2>/dev/null)
     elif (( CURRENT == 3 )); then

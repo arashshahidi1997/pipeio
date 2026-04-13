@@ -261,6 +261,40 @@ The `docs/index.md` sections marked "user" in the table above are
 placeholders with TODO-style comments. The author fills them in as real
 content emerges.
 
+`pipeio_flow_new` is **idempotent**: running it on an existing flow only
+writes files that don't yet exist. Use it as the non-destructive migration
+path for flows created before this spec landed — existing content is never
+overwritten.
+
+## Spec compliance and migration
+
+Use `pipeio_flow_audit` (or `pipeio flow audit <flow>`) to check whether a
+flow complies with this spec. The audit is read-only and reports:
+
+- Which scaffolded files exist (Snakefile, config.yml, publish.yml, CHANGELOG.md)
+- Which canonical sections are present in `docs/index.md`
+- Which mod facet dirs have `theory.md` / `spec.md` pairs
+- A list of issues and suggestions with a fix hint
+
+```bash
+pipeio flow audit <flow>    # detailed per-flow report
+pipeio flow audit all       # summary across every registered flow
+```
+
+**Migration pattern** for retrofitting pre-spec flows:
+
+1. `pipeio flow audit all` — see which flows are non-compliant and why.
+2. `pipeio flow new <flow>` on each — adds missing `CHANGELOG.md`,
+   `publish.yml`, and scaffold directories without touching existing content.
+3. Hand-edit any missing canonical sections in `docs/index.md`. The audit
+   never injects content into user-authored docs; that's an explicit design
+   choice to avoid corrupting prose the author wrote.
+4. `pipeio docs collect` — rebuild the `docs/pipelines/` tree.
+5. `pipeio flow audit all` — confirm compliance.
+
+Auditing does not depend on `docs_collect` — it reads directly from the
+flow source tree, so it's safe to run in tight loops while migrating.
+
 ## See also
 
 - [overview.md](overview.md) — pipeio's broader architecture and where this
@@ -268,5 +302,5 @@ content emerges.
 - [registry.md](registry.md) — how flows are discovered and registered.
 - [notebook.md](notebook.md) — notebook lifecycle and `.build/notebooks/`.
 - [cli.md](cli.md) — `pipeio flow new`, `pipeio docs collect`.
-- [mcp-tools.md](mcp-tools.md) — `pipeio_flow_new`, `pipeio_docs_collect`,
-  `pipeio_dag_export` tool reference.
+- [mcp-tools.md](mcp-tools.md) — `pipeio_flow_new`, `pipeio_flow_audit`,
+  `pipeio_docs_collect`, `pipeio_dag_export` tool reference.
