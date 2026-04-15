@@ -295,6 +295,75 @@ pipeio flow audit all       # summary across every registered flow
 Auditing does not depend on `docs_collect` — it reads directly from the
 flow source tree, so it's safe to run in tight loops while migrating.
 
+## Relationship to results, deliverables, and questions
+
+Flow pages are an **engineering surface**. They describe the machine
+(Purpose, Input/Output, Mod Chain, DAG, status, CHANGELOG) and link to
+scientific outputs — they do not embed result plots, hypothesis evaluations,
+or narrative writeups.
+
+The ecosystem splits ownership along an engineering-vs-science boundary
+documented in [delegation-model.md](../../../../../../docs/explanation/delegation-model.md):
+
+- **pipeio flows** own pipeline machinery (this spec)
+- **questio** owns research questions and hypothesis tracking
+- **notio `result` notes** own individual scientific findings
+- **`docs/deliverables/`** owns narrative artifacts for external audiences
+
+### Linking direction
+
+Cross-references flow **downstream → upstream**. The upstream object (a
+flow, a question) does not track its downstream dependents; those are
+computed at render time by scanning descendants.
+
+Downstream objects set one or more of these frontmatter fields:
+
+| Note type | Fields that reference a flow |
+|---|---|
+| `result` | `source_flow: <flow-name>` — the flow that produced the data the finding is based on |
+| `deliverable` | `source_flows: [<flow-1>, <flow-2>]` — flows cited by the narrative |
+
+A result also sets `question:` (required) and a deliverable sets
+`questions:` and `results:`, per the delegation model. See the
+[notio result template](../../../../../../.projio/notio/templates/result.md)
+and [deliverables spec](../../../../../../docs/specs/deliverables.md).
+
+### Backlinks on the flow page
+
+When `docs_collect` runs, a (planned) `ResultsLinkCollector` and
+`DeliverablesLinkCollector` will scan notio and `docs/deliverables/` for
+notes whose frontmatter references this flow and render backlink sections
+in the flow's collected `index.md`:
+
+```markdown
+## Results
+
+- [TTL contamination is sub-01 only](../../log/result/result-arash-20260410-132442-873270.md)
+  — 2026-04-10 — q-ieeg-artifact-characterization
+- [Template subtraction distortion analysis](../../log/result/...)
+  — 2026-04-09 — q-ieeg-artifact-characterization
+
+## Deliverables
+
+- [Preprocessing methods writeup](../../deliverables/reports/preprocessing-methods.md)
+```
+
+Until the collectors land, flow authors can hand-maintain a
+`## Related work` section in `docs/index.md`. The convention above is
+what the collectors will honor once implemented — tag your results with
+`source_flow:` now and the backlinks will appear automatically later.
+
+### What does **not** belong on a flow page
+
+- Embedded result plots or QC figures (live in result notes and the
+  snakemake `report.html`)
+- Hypothesis state or milestone progress (lives in questio)
+- Narrative writeups of findings (live in `docs/deliverables/`)
+- Prior art citations (live in questio + biblio)
+
+A supervisor visiting the flow page should get a health check and a
+crumb trail to the science, not the science itself.
+
 ## See also
 
 - [overview.md](overview.md) — pipeio's broader architecture and where this
@@ -304,3 +373,5 @@ flow source tree, so it's safe to run in tight loops while migrating.
 - [cli.md](cli.md) — `pipeio flow new`, `pipeio docs collect`.
 - [mcp-tools.md](mcp-tools.md) — `pipeio_flow_new`, `pipeio_flow_audit`,
   `pipeio_docs_collect`, `pipeio_dag_export` tool reference.
+- [delegation-model.md](../../../../../../docs/explanation/delegation-model.md)
+  — the engineering-vs-science boundary and linking-direction rule.

@@ -29,10 +29,19 @@ pipeio is an **agent-facing authoring and discovery layer** for computational pi
 |-----------|--------|---------------------|
 | **indexio** | retrieval | pipeio can register pipeline docs/configs as indexio sources |
 | **biblio** | literature | Independent — no direct coupling |
-| **notio** | notes | Experiment logs may reference pipeline flows |
+| **notio** | notes, results | `result` notes reference flows via `source_flow:` frontmatter; flow pages backlink to them (not the other way around) |
 | **codio** | code intelligence | codio discovers reusable code; pipeio manages where it runs |
+| **questio** | research questions | Questions bind to results which are produced by flows; flow pages stay engineering-only |
+| **deliverables** | narrative | Reports/decks/posters may cite flows via `source_flows:` frontmatter for engineering provenance |
 
-Like the other projio subsystems, pipeio organizes **knowledge** — pipeline metadata, contracts, and structure — rather than managing execution directly.
+Like the other projio subsystems, pipeio organizes **knowledge** — pipeline
+metadata, contracts, and structure — rather than managing execution directly.
+
+pipeio is an **engineering surface**: flows, DAGs, configs, run state, design
+history (CHANGELOG). Scientific findings, hypothesis tracking, and narrative
+reports are owned by notio results, questio, and deliverables respectively.
+See [delegation-model.md](../../../../../docs/explanation/delegation-model.md)
+for the boundary statement and linking-direction rule.
 
 ## Package Structure
 
