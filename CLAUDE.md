@@ -191,7 +191,7 @@ Tools exposed via projio's MCP server (58 tools across 10 categories):
 
 **Documentation (4):** `pipeio_docs_collect`, `pipeio_docs_nav`, `pipeio_mkdocs_nav_patch`, `pipeio_modkey_bib`
 
-**Execution (4):** `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`
+**Execution (4):** `pipeio_run`, `pipeio_run_status`, `pipeio_run_dashboard`, `pipeio_run_kill`. The snakemake command is resolved by projio's runner layer — supports both `conda run -n <env>` and `pixi run [-e <env>]`, auto-detected from `pixi.toml` or configured via `code.runner` in `.projio/config.yml`.
 
 ## Source Layout
 

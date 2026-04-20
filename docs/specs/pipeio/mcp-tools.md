@@ -491,6 +491,8 @@ pipeio_run(
 
 Uses `stdbuf -oL` for unbuffered output. `wildcards` maps to snakebids `--filter-{key} {value}` flags for single-session scoping.
 
+The snakemake command is resolved by projio's runner layer based on `code.runner` in `.projio/config.yml` (`"conda"` or `"pixi"`, auto-detected from `pixi.toml`). For conda: `conda run -n <env> snakemake`. For pixi: `pixi run [-e <env>] snakemake`. The `snakemake_cmd` list is passed through to `mcp_run()`.
+
 #### `pipeio_run_status` *(deprecated)*
 
 Check status of a running or completed Snakemake run.

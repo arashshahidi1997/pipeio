@@ -264,6 +264,14 @@ def validate_flow_contracts(
             else:
                 fv.warnings.append(f"input_dir not found: {cfg.input_dir}")
 
+        # Check bids_dir exists (when set; defaults to input_dir otherwise)
+        if cfg.bids_dir:
+            bids_path = root / cfg.bids_dir
+            if bids_path.exists():
+                fv.passed.append(f"bids_dir exists: {cfg.bids_dir}")
+            else:
+                fv.warnings.append(f"bids_dir not found: {cfg.bids_dir}")
+
         # Check output_dir exists
         if cfg.output_dir:
             output_path = root / cfg.output_dir

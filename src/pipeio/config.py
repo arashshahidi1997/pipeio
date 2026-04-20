@@ -34,6 +34,7 @@ class FlowConfig(BaseModel):
 
     input_dir: str = ""
     input_manifest: str = ""
+    bids_dir: str = ""
     output_dir: str = ""
     output_manifest: str = ""
     registry: dict[str, RegistryGroup] = Field(default_factory=dict)
@@ -49,12 +50,24 @@ class FlowConfig(BaseModel):
         known = {
             "input_dir",
             "input_manifest",
+            "bids_dir",
             "output_dir",
             "output_manifest",
             "registry",
         }
         extra = {k: v for k, v in raw.items() if k not in known}
         return cls(**{k: v for k, v in raw.items() if k in known}, extra=extra)
+
+    def scan_dir(self) -> str:
+        """Return the snakebids ``generate_inputs`` scan root.
+
+        Falls back to ``input_dir`` when ``bids_dir`` is unset. Override
+        ``bids_dir`` to narrow scanning to a specific upstream stage when the
+        upstream flow emits multiple stages sharing BIDS entities (same
+        suffix/extension/datatype, different ``bids.root``). ``BidsPaths``
+        registry lookups continue to use ``input_dir`` as the parent.
+        """
+        return self.bids_dir or self.input_dir
 
     def extra_inputs(self) -> dict[str, tuple[str, str]]:
         """Discover secondary input sources from extra config keys.

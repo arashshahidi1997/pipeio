@@ -5477,6 +5477,7 @@ def mcp_nb_watch(
     flow: str,
     name: str,
     port: int = 0,
+    python_bin: str = "",
 ) -> dict[str, Any]:
     """Launch ``marimo edit --watch`` for live human oversight.
 
@@ -5491,6 +5492,10 @@ def mcp_nb_watch(
         flow: Flow name.
         name: Notebook stem name.
         port: Optional port for the marimo server (0 = auto).
+        python_bin: Python binary where marimo is installed. Use this when
+            marimo needs to run in a different env than the MCP server
+            (e.g. ``"pixi run python"`` or ``"conda run -n cogpy python"``).
+            Empty string = use the backend's auto-detected marimo command.
     """
     import subprocess as sp
 
@@ -5511,7 +5516,12 @@ def mcp_nb_watch(
             "For percent-format notebooks, use nb_lab to open in Jupyter Lab.",
         }
 
-    cmd = [*backend._marimo_cmd, "edit", str(py_path), "--watch"]
+    if python_bin:
+        marimo_cmd = python_bin.split() + ["-m", "marimo"]
+    else:
+        marimo_cmd = backend._marimo_cmd
+
+    cmd = [*marimo_cmd, "edit", str(py_path), "--watch"]
     if port:
         cmd.extend(["--port", str(port)])
 
@@ -5738,6 +5748,7 @@ def mcp_dag_export(
         output_format: ``dot``, ``mermaid``, ``svg`` (requires graphviz), or
             ``json`` (only with d3dag).
         snakemake_cmd: Command tokens to invoke snakemake (e.g.
+            ``["pixi", "run", "snakemake"]`` or
             ``["conda", "run", "-n", "cogpy", "snakemake"]``).
     """
     import subprocess
@@ -6309,6 +6320,43 @@ def mcp_target_paths(
 # ---------------------------------------------------------------------------
 
 
+def _stage_collision_groups(registry: dict[str, Any]) -> list[list[str]]:
+    """Find sets of registry groups whose member filenames collide.
+
+    Two groups collide when they share ``bids.datatype`` and have members
+    with identical ``{suffix, extension}`` and no distinguishing ``desc``
+    (or equal ``desc``) — i.e. only ``bids.root`` separates their outputs
+    on disk. This trips snakebids' ``generate_inputs`` when the scan root
+    covers both stages.
+
+    Returns a list of colliding group-name clusters; empty when no
+    collisions exist.
+    """
+    # Signature: (datatype, frozenset of (suffix, extension, desc) per member)
+    by_sig: dict[tuple, list[str]] = {}
+    for group_name, group in (registry or {}).items():
+        if not isinstance(group, dict):
+            continue
+        bids = group.get("bids") or {}
+        members = group.get("members") or {}
+        if not members:
+            continue
+        datatype = bids.get("datatype", "")
+        member_sigs = frozenset(
+            (
+                (m or {}).get("suffix", ""),
+                (m or {}).get("extension", ""),
+                (m or {}).get("desc", "") or bids.get("desc", ""),
+            )
+            for m in members.values()
+            if isinstance(m, dict)
+        )
+        sig = (datatype, member_sigs)
+        by_sig.setdefault(sig, []).append(group_name)
+
+    return [sorted(names) for names in by_sig.values() if len(names) > 1]
+
+
 def mcp_cross_flow(
     root: Path,
     flow: str | None = None,
@@ -6318,6 +6366,12 @@ def mcp_cross_flow(
     For each flow that declares an ``input_manifest`` (or legacy
     ``input_registry``) in its config, finds which other flow's
     ``output_manifest`` matches.  Detects stale or broken references.
+
+    When the producer has registry groups whose filenames collide (same
+    BIDS entities, different ``bids.root``), emits a ``bids_dir_hint`` on
+    the chain — consumers must narrow their snakebids scan root to one
+    stage, otherwise ``generate_inputs`` errors with "Multiple path
+    templates".
 
     Args:
         root: Project root.
@@ -6356,12 +6410,15 @@ def mcp_cross_flow(
             "flow": entry.name,
             "input_dir": raw.get("input_dir", ""),
             "input_manifest": input_manifest,
+            "bids_dir": raw.get("bids_dir", ""),
             "output_dir": raw.get("output_dir", ""),
             "output_manifest": output_manifest,
+            "registry": raw.get("registry") or {},
         })
 
     # Build output_manifest → flow mapping
     output_map: dict[str, str] = {}
+    meta_by_flow: dict[str, dict[str, Any]] = {fm["flow"]: fm for fm in flow_meta}
     for fm in flow_meta:
         if fm["output_manifest"]:
             output_map[fm["output_manifest"]] = fm["flow"]
@@ -6386,6 +6443,35 @@ def mcp_cross_flow(
         if source_flow:
             dir_exists = (root / input_manifest).exists() if input_manifest else False
             chain_entry["dir_exists"] = dir_exists
+
+            producer_meta = meta_by_flow.get(source_flow, {})
+            collisions = _stage_collision_groups(producer_meta.get("registry", {}))
+            if collisions and not fm["bids_dir"]:
+                producer_input_dir = fm["input_dir"] or producer_meta.get("output_dir", "")
+                suggestions = []
+                for cluster in collisions:
+                    stage_roots = []
+                    for gname in cluster:
+                        grp = producer_meta["registry"].get(gname) or {}
+                        stage_roots.append((grp.get("bids") or {}).get("root") or gname)
+                    suggestions.append({
+                        "colliding_groups": cluster,
+                        "stage_roots": stage_roots,
+                        "suggested_bids_dir": [
+                            f"{producer_input_dir}/{r}".rstrip("/")
+                            for r in stage_roots
+                        ],
+                    })
+                chain_entry["bids_dir_hint"] = {
+                    "reason": (
+                        f"Producer {source_flow!r} has stages with identical BIDS "
+                        "entities — generate_inputs will error with 'Multiple path "
+                        "templates' if bids_dir scans the parent. Set bids_dir to one "
+                        "stage subdirectory; leave input_dir as the parent for "
+                        "BidsPaths lookups."
+                    ),
+                    "suggestions": suggestions,
+                }
             chains.append(chain_entry)
         else:
             chain_entry["status"] = "unresolved"
@@ -6649,6 +6735,7 @@ def mcp_run(
         retries: Number of times to retry failing jobs (default 0).
         extra_args: Additional Snakemake CLI arguments.
         snakemake_cmd: Command tokens to invoke snakemake (e.g.
+            ``["pixi", "run", "snakemake"]`` or
             ``["conda", "run", "-n", "cogpy", "snakemake"]``).
             Defaults to ``["snakemake"]``.
         wildcards: Entity filters for scoping runs (e.g.

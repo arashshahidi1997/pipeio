@@ -203,7 +203,10 @@ class BidsPaths(Mapping[str, _FamilyView]):
         from snakebids import generate_inputs
         from pipeio.adapters.bids import BidsPaths
 
-        inputs = generate_inputs(bids_dir, config["pybids_inputs"])
+        # bids_dir narrows the scan root when the upstream flow emits
+        # multiple stages sharing BIDS entities. Falls back to input_dir.
+        scan_root = config.get("bids_dir") or config["input_dir"]
+        inputs = generate_inputs(scan_root, config["pybids_inputs"])
         out = BidsPaths(config["registry"], output_dir, inputs)
         path = out("badlabel", "npy", subject="test", session="01")
     """
