@@ -61,6 +61,59 @@ def _pipeio_dir(root: Path) -> Path:
     return root / ".pipeio"
 
 
+def _load_pipeio_config(root: Path) -> dict:
+    """Project-level pipeio config from ``.projio/pipeio/config.yml`` (or ``{}``)."""
+    cfg = _pipeio_dir(root) / "config.yml"
+    if cfg.exists():
+        return yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    return {}
+
+
+def _has_flag(args: list[str], flag: str) -> bool:
+    return any(a == flag or a.startswith(flag + "=") for a in (args or []))
+
+
+def _profile_dir_ok(d: Path) -> bool:
+    # A snakemake profile folder must carry config.yaml (config.v8+.yaml for v8+-only opts).
+    return (d / "config.yaml").exists() or (d / "config.v8+.yaml").exists()
+
+
+def _profile_args(root: Path, flow_dir: Path, existing_args: list[str] | None = None) -> list[str]:
+    """Snakemake profile flags to inject for a flow run, honoring user overrides.
+
+    Layered lowest->highest precedence (snakemake merges, later wins):
+      1. shared base   -> ``--profile <profiles.base>`` from ``.projio/pipeio/config.yml``
+         (path relative to project root), a project-wide default profile.
+      2. per-flow      -> ``--workflow-profile <flow_dir>/profiles/default`` when it exists,
+         so an individual flow can override/extend the base.
+      3. user-passed ``--profile`` / ``--workflow-profile`` in ``existing_args`` always wins:
+         if present we don't inject that flag.
+
+    Returns ``[]`` when nothing is configured / present / already user-supplied. Injected
+    flags are echoed to stderr for transparency.
+    """
+    existing_args = existing_args or []
+    out: list[str] = []
+    if not _has_flag(existing_args, "--profile"):
+        base = ((_load_pipeio_config(root).get("profiles") or {}).get("base"))
+        if base:
+            base_dir = Path(base)
+            if not base_dir.is_absolute():
+                base_dir = root / base_dir
+            if _profile_dir_ok(base_dir):
+                out += ["--profile", str(base_dir)]
+            else:
+                print(f"pipeio: profiles.base '{base}' has no config.yaml — skipping",
+                      file=sys.stderr)
+    if not _has_flag(existing_args, "--workflow-profile"):
+        wf = flow_dir / "profiles" / "default"
+        if _profile_dir_ok(wf):
+            out += ["--workflow-profile", str(wf)]
+    if out:
+        print(f"pipeio: injecting {' '.join(out)}", file=sys.stderr)
+    return out
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     root = Path(args.root) if args.root else _find_root()
     pipeio_dir = _pipeio_dir(root)
@@ -224,6 +277,7 @@ def _cmd_flow_smk(args: argparse.Namespace) -> int:
         *smk_cmd,
         "--snakefile", str(snakefile),
         "--directory", str(flow_dir),
+        *_profile_args(root, flow_dir, args.smk_args),
         *args.smk_args,
     ]
 
@@ -370,6 +424,7 @@ def _cmd_flow_run(args: argparse.Namespace) -> int:
         retries=getattr(args, "retries", 0),
         snakemake_cmd=_resolve_snakemake(),
         wildcards=wildcards or None,
+        profile_args=_profile_args(root, _flow_code_dir(root, entry)),
     )
 
     if "error" in result:

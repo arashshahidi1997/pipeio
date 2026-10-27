@@ -6715,6 +6715,7 @@ def mcp_run(
     extra_args: list[str] | None = None,
     snakemake_cmd: list[str] | None = None,
     wildcards: dict[str, str] | None = None,
+    profile_args: list[str] | None = None,
 ) -> dict[str, Any]:
     """Launch Snakemake in a detached screen session.
 
@@ -6741,6 +6742,11 @@ def mcp_run(
         wildcards: Entity filters for scoping runs (e.g.
             ``{"subject": "01", "session": "04"}``).  Maps to
             snakebids ``--filter-{key} {value}`` CLI flags.
+        profile_args: Snakemake profile flags. ``None`` (default) injects
+            ``profiles.base`` from ``.projio/pipeio/config.yml`` as
+            ``--profile`` and ``<flow>/profiles/default`` as
+            ``--workflow-profile``, unless *extra_args* already carries
+            either flag. ``[]`` disables injection.
     """
     import json
     import shutil
@@ -6816,6 +6822,14 @@ def mcp_run(
         "--printshellcmds",
         "--show-failed-logs",
     ]
+    # Project base profile (--profile) + per-flow override (--workflow-profile), if any.
+    # None = resolve here, so MCP callers get the same layering as the CLI.
+    if profile_args is None:
+        from pipeio.cli import _profile_args
+
+        profile_args = _profile_args(root, flow_dir, extra_args)
+    if profile_args:
+        snake_cmd.extend(profile_args)
     if keep_going:
         snake_cmd.append("--keep-going")
     if dryrun:
