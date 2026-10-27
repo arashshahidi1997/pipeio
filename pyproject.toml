@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Software Development :: Build Tools",
 ]
-dependencies = ["pyyaml>=6.0", "pydantic>=2.0"]
+dependencies = ["pyyaml>=6.0", "pydantic>=2.0", "argcomplete>=3.0", "ruamel.yaml>=0.18"]
 
 [project.urls]
 Homepage = "https://github.com/arashshahidi1997/pipeio"
