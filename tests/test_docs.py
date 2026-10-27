@@ -295,6 +295,55 @@ def test_docs_nav_includes_notebooks(tmp_path):
     assert "analysis" in result.lower()
 
 
+def test_docs_nav_lists_only_published_notebooks(tmp_path):
+    """Registered flows: nav skips notebook output whose publish flag is off."""
+    _scaffold_project(tmp_path)
+    nb_dir = tmp_path / "docs" / "pipelines" / "denoise" / "notebooks"
+    nb_dir.mkdir(parents=True)
+    (nb_dir / "analysis.html").touch()   # publish_html: true
+    (nb_dir / "secret.html").touch()     # not in notebook.yml
+    (nb_dir / "analysis.md").touch()     # publish_myst off
+
+    from pipeio.docs import docs_nav
+    docs_nav(tmp_path, write=True)
+    sub = yaml.safe_load((tmp_path / "docs" / "pipelines" / "mkdocs.yml").read_text())
+    nb_nav = next(e["Notebooks"] for e in sub["nav"][0]["denoise"] if "Notebooks" in e)
+    assert [list(e.values())[0] for e in nb_nav] == ["denoise/notebooks/analysis.html"]
+
+
+def test_docs_collect_publishes_only_flagged_notebooks(tmp_path):
+    """End to end: unflagged built HTML never reaches docs/ or the nav."""
+    _scaffold_project(tmp_path)
+    flow_dir = tmp_path / "code" / "pipelines" / "denoise"
+    cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["entries"].append({"path": "notebooks/draft.py", "publish_myst": True})
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    build_nb = flow_dir / ".build" / "notebooks"
+    build_nb.mkdir(parents=True)
+    (build_nb / "analysis.html").write_text("<html/>", encoding="utf-8")
+    (build_nb / "draft.html").write_text("<html/>", encoding="utf-8")
+    stale = tmp_path / "docs" / "pipelines" / "denoise" / "notebooks" / "draft.html"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("<html/>", encoding="utf-8")
+
+    from pipeio.docs import docs_collect
+    docs_collect(tmp_path, export=False)
+    nb_out = tmp_path / "docs" / "pipelines" / "denoise" / "notebooks"
+    assert sorted(f.name for f in nb_out.glob("*.html")) == ["analysis.html"]
+    assert "draft" not in (tmp_path / "docs" / "pipelines" / "mkdocs.yml").read_text()
+
+
+def test_docs_collect_nav_follows_docs_base(tmp_path):
+    """A custom docs_base gets its own mkdocs.yml; docs/pipelines/ is untouched."""
+    _scaffold_project(tmp_path)
+    out = tmp_path / "elsewhere"
+    from pipeio.docs import docs_collect
+    docs_collect(tmp_path, export=False, docs_base=out)
+    assert (out / "mkdocs.yml").is_file()
+    assert not (tmp_path / "docs" / "pipelines").exists()
+
+
 def test_docs_collect_overview_as_index(tmp_path):
     """overview.md should be used as index.md, avoiding duplicate nav entries."""
     _scaffold_project(tmp_path)
@@ -662,11 +711,20 @@ class TestIndexCollector:
         assert "Existing" in (ctx.target / "index.md").read_text()
 
 
+def _write_nb_yml(flow_dir, entries):
+    nb_dir = flow_dir / "notebooks"
+    nb_dir.mkdir(parents=True, exist_ok=True)
+    (nb_dir / "notebook.yml").write_text(
+        yaml.safe_dump({"publish": {"format": "html"}, "entries": entries}), encoding="utf-8")
+
+
 class TestNotebookCollector:
     def test_copies_from_build(self, tmp_path):
-        """Copies pre-built HTML from .build/notebooks/."""
+        """Copies published HTML from .build/notebooks/ and writes an index."""
         from pipeio.docs import NotebookCollector
         ctx = _make_ctx(tmp_path)
+        _write_nb_yml(ctx.flow_dir, [
+            {"path": "notebooks/explore/.src/analysis.py", "publish_html": True}])
         build_nb = ctx.build_dir / "notebooks"
         build_nb.mkdir(parents=True)
         (build_nb / "analysis.html").write_text("<html/>", encoding="utf-8")
@@ -675,7 +733,7 @@ class TestNotebookCollector:
         result = NotebookCollector().collect(ctx)
         assert len(result) == 2
         assert (ctx.target / "notebooks" / "analysis.html").exists()
-        assert (ctx.target / "notebooks" / "index.md").exists()
+        assert "analysis.html" in (ctx.target / "notebooks" / "index.md").read_text()
 
     def test_no_build_dir(self, tmp_path):
         """Returns empty when no .build/notebooks/ exists."""
@@ -687,14 +745,69 @@ class TestNotebookCollector:
         """Only copies .html and .md files from .build/notebooks/."""
         from pipeio.docs import NotebookCollector
         ctx = _make_ctx(tmp_path)
+        _write_nb_yml(ctx.flow_dir, [
+            {"path": "notebooks/explore/.src/analysis.py", "publish_html": True}])
         build_nb = ctx.build_dir / "notebooks"
         build_nb.mkdir(parents=True)
         (build_nb / "analysis.html").write_text("<html/>", encoding="utf-8")
         (build_nb / "data.json").write_text("{}", encoding="utf-8")
 
         result = NotebookCollector().collect(ctx)
-        assert len(result) == 1
+        assert [Path(r).name for r in result] == ["analysis.html", "index.md"]
         assert not (ctx.target / "notebooks" / "data.json").exists()
+
+    def test_only_publish_html_entries(self, tmp_path):
+        """Built HTML of entries without publish_html stays out of the docs tree."""
+        from pipeio.docs import NotebookCollector
+        ctx = _make_ctx(tmp_path)
+        _write_nb_yml(ctx.flow_dir, [
+            {"path": "notebooks/explore/.src/shown.py", "publish_html": True},
+            {"path": "notebooks/explore/.src/hidden.py", "publish_html": False},
+            {"path": "notebooks/explore/.src/myst_only.py", "publish_myst": True},
+        ])
+        build_nb = ctx.build_dir / "notebooks"
+        build_nb.mkdir(parents=True)
+        for name in ("shown", "hidden", "myst_only", "orphan"):
+            (build_nb / f"{name}.html").write_text("<html/>", encoding="utf-8")
+
+        NotebookCollector().collect(ctx)
+        html = sorted(f.name for f in (ctx.target / "notebooks").glob("*.html"))
+        assert html == ["shown.html"]
+        index = (ctx.target / "notebooks" / "index.md").read_text()
+        assert "shown.html" in index and "hidden" not in index
+
+    def test_removes_stale_unpublished_copies(self, tmp_path):
+        """Copies left from earlier collects are removed once unpublished."""
+        from pipeio.docs import NotebookCollector
+        ctx = _make_ctx(tmp_path)
+        _write_nb_yml(ctx.flow_dir, [
+            {"path": "notebooks/explore/.src/kept.py", "publish_html": True, "publish_myst": True},
+            {"path": "notebooks/explore/.src/dropped.py", "publish_html": False},
+        ])
+        nb_target = ctx.target / "notebooks"
+        nb_target.mkdir(parents=True)
+        for f in ("kept.html", "kept.md", "dropped.html", "dropped.md", "old_orphan.html",
+                  "handwritten.md"):
+            (nb_target / f).write_text("x", encoding="utf-8")
+
+        NotebookCollector().collect(ctx)
+        left = sorted(f.name for f in nb_target.iterdir())
+        assert left == ["handwritten.md", "index.md", "kept.html", "kept.md"]
+
+    def test_nothing_published_removes_generated_index(self, tmp_path):
+        from pipeio.docs import NotebookCollector, _AUTO_GENERATED_HEADER
+        ctx = _make_ctx(tmp_path)
+        _write_nb_yml(ctx.flow_dir, [{"path": "notebooks/explore/.src/a.py"}])
+        build_nb = ctx.build_dir / "notebooks"
+        build_nb.mkdir(parents=True)
+        (build_nb / "a.html").write_text("<html/>", encoding="utf-8")
+        nb_target = ctx.target / "notebooks"
+        nb_target.mkdir(parents=True)
+        (nb_target / "a.html").write_text("<html/>", encoding="utf-8")
+        (nb_target / "index.md").write_text(_AUTO_GENERATED_HEADER + "# Notebooks\n", encoding="utf-8")
+
+        assert NotebookCollector().collect(ctx) == []
+        assert list(nb_target.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +815,23 @@ class TestNotebookCollector:
 # ---------------------------------------------------------------------------
 
 class TestExportNotebooks:
+    def test_publish_myst_only_never_becomes_html(self, tmp_path):
+        """publish.format html + publish_myst only: no HTML export (it used to leak)."""
+        from pipeio.docs import export_notebooks
+        ctx = _make_ctx(tmp_path)
+        nb_dir = ctx.flow_dir / "notebooks"
+        nb_dir.mkdir()
+        (nb_dir / "notebook.yml").write_text(yaml.safe_dump({
+            "publish": {"format": "html"},
+            "entries": [{"path": "notebooks/draft.py", "publish_myst": True}],
+        }), encoding="utf-8")
+        (nb_dir / "draft.ipynb").write_text("{}", encoding="utf-8")
+
+        with patch("pipeio.docs.subprocess.run") as run:
+            result = export_notebooks(ctx)
+        run.assert_not_called()
+        assert not any(p.endswith(".html") for p in result)
+
     def test_exports_html(self, tmp_path):
         """export_notebooks generates HTML in .build/notebooks/."""
         import json

@@ -162,6 +162,69 @@ def export_dag(ctx: CollectContext) -> str | None:
     return str(out)
 
 
+def published_notebooks(flow_dir: Path) -> tuple[set[str], set[str]]:
+    """Read the per-notebook publish flags from ``{flow}/notebooks/notebook.yml``.
+
+    Returns ``(published, known)``: *published* holds the output file names
+    the flags allow (``<name>.html`` for ``publish_html: true``,
+    ``<name>.md`` for ``publish_myst: true``); *known* holds the stems of
+    every notebook entry. No (or unreadable) ``notebook.yml`` publishes nothing.
+    """
+    nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
+    if not nb_cfg_path.exists():
+        return set(), set()
+
+    from pipeio.notebook.config import NotebookConfig
+
+    try:
+        nb_cfg = NotebookConfig.from_yaml(nb_cfg_path)
+    except Exception:
+        return set(), set()
+
+    published: set[str] = set()
+    known: set[str] = set()
+    for nb_entry in nb_cfg.entries:
+        name = Path(nb_entry.path).stem
+        known.add(name)
+        if nb_entry.publish_html:
+            published.add(f"{name}.html")
+        if nb_entry.publish_myst:
+            published.add(f"{name}.md")
+    return published, known
+
+
+def _is_unpublished_notebook(f: Path, published: set[str], known: set[str]) -> bool:
+    """True when *f* (in a ``notebooks/`` dir) is notebook output the flags don't publish.
+
+    HTML in ``notebooks/`` only ever comes from notebook export, so any HTML
+    not in *published* counts. A ``.md`` counts only when its stem is a known
+    notebook, which leaves hand-written pages alone.
+    """
+    if f.name == "index.md" or f.suffix not in (".html", ".md"):
+        return False
+    if f.name in published:
+        return False
+    return f.suffix == ".html" or f.stem in known
+
+
+def _write_notebook_index(nb_dir: Path, flow_name: str, files: list[Path]) -> Path | None:
+    """Write (or remove, when *files* is empty) the generated ``index.md`` listing."""
+    nb_index = nb_dir / "index.md"
+    if not files:
+        if nb_index.is_file() and nb_index.read_text(encoding="utf-8").startswith(
+            _AUTO_GENERATED_HEADER.rstrip()
+        ):
+            nb_index.unlink()
+        return None
+    lines = [_AUTO_GENERATED_HEADER.rstrip(), f"# Notebooks — {flow_name}", ""]
+    for f in files:
+        title = f.stem.replace("-", " ").replace("_", " ").title()
+        lines.append(f"- [{title}]({f.name})")
+    lines.append("")
+    nb_index.write_text("\n".join(lines), encoding="utf-8")
+    return nb_index
+
+
 def export_notebooks(ctx: CollectContext) -> list[str]:
     """Export publishable notebook HTML/MyST into ``{flow}/.build/notebooks/``.
 
@@ -198,7 +261,9 @@ def export_notebooks(ctx: CollectContext) -> list[str]:
         if kind in ("investigate", "explore") and not nb_entry.publish_html and not nb_entry.publish_myst:
             continue
 
-        if nb_entry.publish_html or (fmt == "html" and (nb_entry.publish_html or nb_entry.publish_myst)):
+        # HTML only for publish_html: a publish_myst-only entry never becomes
+        # public HTML (the .md route below is gated on publish.format).
+        if nb_entry.publish_html:
             if ipynb_path.exists():
                 build_nb.mkdir(parents=True, exist_ok=True)
                 out = build_nb / f"{name}.html"
@@ -214,20 +279,15 @@ def export_notebooks(ctx: CollectContext) -> list[str]:
                     shutil.copy2(myst_path, out)
                 exported.append(str(out))
 
-    # Generate index.md listing in .build/notebooks/
+    # Generate index.md listing in .build/notebooks/ (published entries only;
+    # .build/ also holds HTML from nb exec / nb publish runs)
     if build_nb.is_dir():
+        published, _ = published_notebooks(ctx.flow_dir)
         nb_files = sorted(
-            f for f in build_nb.iterdir()
-            if f.is_file() and f.suffix in (".html", ".md") and f.name != "index.md"
+            f for f in build_nb.iterdir() if f.is_file() and f.name in published
         )
-        if nb_files:
-            nb_index = build_nb / "index.md"
-            lines = [_AUTO_GENERATED_HEADER.rstrip(), f"# Notebooks — {ctx.entry.name}", ""]
-            for f in nb_files:
-                title = f.stem.replace("-", " ").replace("_", " ").title()
-                lines.append(f"- [{title}]({f.name})")
-            lines.append("")
-            nb_index.write_text("\n".join(lines), encoding="utf-8")
+        nb_index = _write_notebook_index(build_nb, ctx.entry.name, nb_files)
+        if nb_index is not None:
             exported.append(str(nb_index))
 
     return exported
@@ -281,36 +341,43 @@ class DocsCollector:
 
 
 class NotebookCollector:
-    """Copy pre-built notebook artifacts from ``.build/notebooks/`` to the output tree.
+    """Copy published notebook artifacts from ``.build/notebooks/`` to the output tree.
 
     Expects ``export_notebooks()`` to have already generated HTML/MyST
-    into ``{flow}/.build/notebooks/``. This collector is a pure copier.
+    into ``{flow}/.build/notebooks/``. Only files the ``notebook.yml``
+    flags publish are copied (``publish_html`` → ``.html``, ``publish_myst``
+    → ``.md``); copies of unpublished notebooks already in the output tree
+    are removed, so the site never carries them.
     """
 
     def collect(self, ctx: CollectContext) -> list[str]:
         collected: list[str] = []
         build_nb = ctx.build_dir / "notebooks"
-        if not build_nb.is_dir():
-            return collected
-
         nb_target = ctx.target / "notebooks"
-        for src in sorted(build_nb.iterdir()):
-            if not src.is_file():
-                continue
-            if src.suffix not in (".html", ".md"):
-                continue
-            dst = nb_target / src.name
-            if src.suffix == ".html":
-                # HTML files are copied as-is (no source header)
+        published, known = published_notebooks(ctx.flow_dir)
+
+        if build_nb.is_dir():
+            known |= {f.stem for f in build_nb.iterdir() if f.suffix in (".html", ".md")}
+            for src in sorted(build_nb.iterdir()):
+                if not src.is_file() or src.name not in published:
+                    continue
+                dst = nb_target / src.name
                 if _is_stale(src, dst):
                     nb_target.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
-            else:
-                # .md files get the generated header
-                if _is_stale(src, dst):
-                    nb_target.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-            collected.append(str(dst))
+
+        if nb_target.is_dir():
+            for f in sorted(nb_target.iterdir()):
+                if f.is_file() and _is_unpublished_notebook(f, published, known):
+                    f.unlink()
+            files = sorted(
+                f for f in nb_target.iterdir()
+                if f.is_file() and f.suffix in (".html", ".md") and f.name != "index.md"
+            )
+            nb_index = _write_notebook_index(nb_target, ctx.entry.name, files)
+            collected.extend(str(f) for f in files)
+            if nb_index is not None:
+                collected.append(str(nb_index))
 
         return collected
 
@@ -595,7 +662,7 @@ def docs_collect(
 
     # Write docs/pipelines/mkdocs.yml for monorepo plugin
     if collected:
-        docs_nav(root, write=True)
+        docs_nav(root, write=True, docs_base=docs_base)
         sub_mkdocs = docs_base / "mkdocs.yml"
         if sub_mkdocs.exists():
             collected.append(str(sub_mkdocs))
@@ -682,6 +749,24 @@ def _resolve_snakemake_for_docs() -> list[str]:
 # Nav generation
 # ---------------------------------------------------------------------------
 
+def _registry_flow_dirs(root: Path) -> dict[str, Path]:
+    """Map registered flow names to their code directories ({} without a registry)."""
+    from pipeio.registry import PipelineRegistry
+
+    registry_path = _find_registry(root)
+    if registry_path is None:
+        return {}
+    try:
+        registry = PipelineRegistry.from_yaml(registry_path)
+    except Exception:
+        return {}
+    dirs: dict[str, Path] = {}
+    for entry in registry.list_flows():
+        code = Path(entry.code_path)
+        dirs[entry.name] = code if code.is_absolute() else root / code
+    return dirs
+
+
 def docs_nav(
     root: Path,
     *,
@@ -708,6 +793,7 @@ def docs_nav(
         return "# No docs/pipelines/ directory found.\n"
 
     flow_navs: list[dict[str, Any]] = []
+    flow_code_dirs = _registry_flow_dirs(root)
 
     for flow_dir in sorted(d for d in docs_base.iterdir() if d.is_dir()):
         flow_entries: list[dict[str, Any]] = []
@@ -739,8 +825,12 @@ def docs_nav(
                 nb_entries.append(
                     {"Overview": str(nb_idx.relative_to(docs_base))}
                 )
+            code_dir = flow_code_dirs.get(flow_dir.name)
+            published, known = published_notebooks(code_dir) if code_dir else (set(), set())
             for f in sorted(nb_dir.iterdir()):
                 if f.name == "index.md":
+                    continue
+                if code_dir and _is_unpublished_notebook(f, published, known):
                     continue
                 if f.suffix in (".html", ".md") and f.is_file():
                     title = f.stem.replace("-", " ").replace("_", " ").title()
