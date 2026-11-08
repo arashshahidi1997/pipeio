@@ -22,11 +22,27 @@ site/
 .projio/site/
 
 # >>> projio >>>
+*.ipynb
+.claude/commands/
 .claude/settings.json
+.codex/config.toml
+.ipynb_checkpoints/
 .mcp.json
+.pipeio/runs.json
 .projio.mkdocs.yml
+.projio/biblio/logs/
+.projio/codio/mirrors/
+.projio/filters/
 .projio/indexio/index/
+.projio/indexio/jobs/
+.projio/render/compiled.bib
+.projio/render/pandoc-defaults.yaml
 .projio/servers.json
 .projio/site/
+.snakemake/
+.vscode/mcp.json
+docs/deliverables/reports/*/_files/
+docs/deliverables/reports/*/_freeze/
+docs/pipelines/mkdocs.yml
 site/
 # <<< projio <<<
