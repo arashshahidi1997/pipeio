@@ -17,7 +17,7 @@ code/pipelines/text_analysis/
 ├── Snakefile
 ├── config.yml              # input_manifest, output_manifest, registry
 ├── publish.yml             # dag: true, scripts: true
-├── Makefile
+├── README.md               # run instructions (pipeio flow smk / run)
 ├── rules/                  # for per-mod .smk files
 ├── scripts/
 ├── docs/
@@ -342,7 +342,7 @@ pipeio_contracts_validate()
 
 | Entity | Tool used | File created |
 |--------|-----------|-------------|
-| Flow | `flow new` | Snakefile, config.yml, publish.yml, Makefile |
+| Flow | `flow new` | Snakefile, config.yml, publish.yml, README.md |
 | Config | `config_init`, `config_patch` | config.yml with registry groups |
 | Mod | `mod_create` | scripts/wordcount.py, docs/wordcount/theory.md + spec.md |
 | Script | `mod_create`, `script_create` | scripts/*.py with I/O template |

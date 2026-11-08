@@ -734,14 +734,6 @@ def _resolve_snakemake_for_docs() -> list[str]:
     if binary:
         return [binary]
 
-    # Try common conda env names
-    for env in ("cogpy", "snakemake"):
-        for base in ("/storage/share/python/environments/Anaconda3",):
-            for rel in ("condabin/conda", "bin/conda"):
-                conda = Path(base) / rel
-                if conda.is_file():
-                    return [str(conda), "run", "-n", env, "snakemake"]
-
     return ["snakemake"]
 
 

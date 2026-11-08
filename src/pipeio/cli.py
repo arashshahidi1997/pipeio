@@ -705,14 +705,6 @@ def _resolve_snakemake() -> list[str]:
                     return [conda_bin, "run", "-n", env_name, cmd_name]
         return [binary]
 
-    # Fallback: try common conda env names
-    for env in ("cogpy", "snakemake"):
-        for base in ("/storage/share/python/environments/Anaconda3",):
-            for rel in ("condabin/conda", "bin/conda"):
-                conda = Path(base) / rel
-                if conda.is_file():
-                    return [str(conda), "run", "-n", env, "snakemake"]
-
     # Last resort
     print("warning: snakemake not found, trying bare 'snakemake'", file=sys.stderr)
     return ["snakemake"]
@@ -789,43 +781,13 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
         )
         created.append("publish.yml")
 
-    # Makefile (only if new)
-    makefile = flow_dir / "Makefile"
-    if not makefile.exists():
-        makefile.write_text(
-            f"# Flow: {flow}\n"
-            f"SHELL := /bin/bash\n"
-            f"\n"
-            f"# Project root (relative to this Makefile)\n"
-            f"PROJECT_ROOT ?= $(shell git -C $(dir $(abspath $(lastword $(MAKEFILE_LIST)))) rev-parse --show-toplevel)\n"
-            f"SNAKEMAKE    ?= snakemake\n"
-            f"\n"
-            f".PHONY: help run dry-run nb-status nb-sync nb-lab nb-publish\n"
-            f"\n"
-            f"help:\n"
-            f"\t@echo \"Targets: run dry-run nb-status nb-sync nb-lab nb-publish\"\n"
-            f"\n"
-            f"run:\n"
-            f"\t$(SNAKEMAKE) --snakefile $(CURDIR)/Snakefile --directory $(PROJECT_ROOT) -j1\n"
-            f"\n"
-            f"dry-run:\n"
-            f"\t$(SNAKEMAKE) --snakefile $(CURDIR)/Snakefile --directory $(PROJECT_ROOT) -j1 -n\n"
-            f"\n"
-            f"nb-status:\n"
-            f"\tpipeio nb status\n"
-            f"\n"
-            f"nb-sync:\n"
-            f"\tpipeio nb sync --direction py2nb\n"
-            f"\n"
-            f"nb-lab:\n"
-            f"\tpipeio nb lab\n"
-            f"\n"
-            f"nb-publish:\n"
-            f"\tpipeio nb sync --direction py2nb --force\n"
-            f"\tpipeio nb publish\n",
-            encoding="utf-8",
-        )
-        created.append("Makefile")
+    # README — cross-platform run instructions (replaces the old per-flow bash
+    # Makefile). `pipeio flow smk` is runner-aware (pixi/conda).
+    readme = flow_dir / "README.md"
+    if not readme.exists():
+        from pipeio.mcp import _flow_readme
+        readme.write_text(_flow_readme(flow), encoding="utf-8")
+        created.append("README.md")
 
     # notebook.yml (only if new)
     nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"

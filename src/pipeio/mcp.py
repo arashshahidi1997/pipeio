@@ -25,7 +25,8 @@ _NO_REGISTRY = {"error": "No pipeline registry found", "hint": "Run pipeio init"
 def _find_dot() -> str | None:
     """Find the graphviz ``dot`` binary.
 
-    Checks PATH first, then known conda env locations.
+    Checks PATH first (e.g. ``pixi global install graphviz``), then
+    alongside the running Python.
     """
     import shutil
     import sys
@@ -34,16 +35,10 @@ def _find_dot() -> str | None:
     if found:
         return found
 
-    # Check alongside the running Python (same conda env)
+    # Check alongside the running Python (same env)
     env_bin = Path(sys.executable).parent / "dot"
     if env_bin.exists():
         return str(env_bin)
-
-    # Known conda env fallback paths
-    for env in ("rag", "cogpy"):
-        candidate = Path("/storage/share/python/environments/Anaconda3/envs") / env / "bin" / "dot"
-        if candidate.exists():
-            return str(candidate)
 
     return None
 
@@ -539,6 +534,39 @@ def mcp_flow_fork(
     }
 
 
+def _flow_readme(flow: str) -> str:
+    """Cross-platform run instructions for a scaffolded flow.
+
+    Replaces the old per-flow bash ``Makefile`` (which hardcoded ``/bin/bash``
+    and bare ``snakemake``).  Points at the runner-aware ``pipeio`` CLI, which
+    resolves snakemake through the project's pixi/conda environment.
+    """
+    return (
+        f"# Flow: {flow}\n"
+        f"\n"
+        f"Run this flow with the `pipeio` CLI — cross-platform and runner-aware\n"
+        f"(it resolves snakemake through the project's pixi/conda environment):\n"
+        f"\n"
+        f"```bash\n"
+        f"pipeio flow smk {flow}        # run snakemake in this flow's context\n"
+        f"pipeio flow smk {flow} -n     # dry run\n"
+        f"pipeio flow run {flow}        # run in a detached screen session\n"
+        f"```\n"
+        f"\n"
+        f"Notebooks (explore/ + demo/ workspaces):\n"
+        f"\n"
+        f"```bash\n"
+        f"pipeio nb status                  # sync / publish status\n"
+        f"pipeio nb sync --direction py2nb\n"
+        f"pipeio nb lab                     # open Jupyter Lab\n"
+        f"pipeio nb publish                 # publish demo notebooks to the site\n"
+        f"```\n"
+        f"\n"
+        f"Layout: `Snakefile`, `config.yml`, `publish.yml`, `rules/`, `scripts/`,\n"
+        f"`docs/`, `notebooks/`.\n"
+    )
+
+
 def mcp_flow_new(
     root: Path,
     flow: str,
@@ -548,7 +576,7 @@ def mcp_flow_new(
     """Scaffold a new pipeline flow with standard directory structure.
 
     Creates the full flow scaffold under ``code/pipelines/<flow>/``:
-    Snakefile, config.yml, publish.yml, Makefile, scripts/, rules/,
+    Snakefile, config.yml, publish.yml, README.md, scripts/, rules/,
     docs/index.md, and notebook workspaces (explore + demo).
 
     Idempotent: only writes missing files, so it can augment an
@@ -639,42 +667,13 @@ def mcp_flow_new(
         )
         created.append("publish.yml")
 
-    # Makefile
-    makefile = flow_dir / "Makefile"
-    if not makefile.exists():
-        makefile.write_text(
-            f"# Flow: {flow}\n"
-            f"SHELL := /bin/bash\n"
-            f"\n"
-            f"# Project root (relative to this Makefile)\n"
-            f"PROJECT_ROOT ?= $(shell git -C $(dir $(abspath $(lastword $(MAKEFILE_LIST)))) rev-parse --show-toplevel)\n"
-            f"\n"
-            f".PHONY: help run dry-run nb-status nb-sync nb-lab nb-publish\n"
-            f"\n"
-            f"help:\n"
-            f"\t@echo \"Targets: run dry-run nb-status nb-sync nb-lab nb-publish\"\n"
-            f"\n"
-            f"run:\n"
-            f"\tsnakemake --snakefile $(CURDIR)/Snakefile --directory $(PROJECT_ROOT) -j1\n"
-            f"\n"
-            f"dry-run:\n"
-            f"\tsnakemake --snakefile $(CURDIR)/Snakefile --directory $(PROJECT_ROOT) -j1 -n\n"
-            f"\n"
-            f"nb-status:\n"
-            f"\tpipeio nb status\n"
-            f"\n"
-            f"nb-sync:\n"
-            f"\tpipeio nb sync --direction py2nb\n"
-            f"\n"
-            f"nb-lab:\n"
-            f"\tpipeio nb lab\n"
-            f"\n"
-            f"nb-publish:\n"
-            f"\tpipeio nb sync --direction py2nb --force\n"
-            f"\tpipeio nb publish\n",
-            encoding="utf-8",
-        )
-        created.append("Makefile")
+    # README — cross-platform run instructions. Replaces the old per-flow bash
+    # Makefile (which hardcoded /bin/bash + bare `snakemake`). `pipeio flow smk`
+    # is runner-aware: it resolves snakemake through the project's pixi/conda env.
+    readme = flow_dir / "README.md"
+    if not readme.exists():
+        readme.write_text(_flow_readme(flow), encoding="utf-8")
+        created.append("README.md")
 
     # notebook.yml + initial explore notebook
     nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
@@ -5494,7 +5493,7 @@ def mcp_nb_watch(
         port: Optional port for the marimo server (0 = auto).
         python_bin: Python binary where marimo is installed. Use this when
             marimo needs to run in a different env than the MCP server
-            (e.g. ``"pixi run python"`` or ``"conda run -n cogpy python"``).
+            (e.g. ``"pixi run python"`` or ``"pixi run -e compute python"``).
             Empty string = use the backend's auto-detected marimo command.
     """
     import subprocess as sp
@@ -5571,7 +5570,7 @@ def mcp_nb_snapshot(
         max_text_length: Truncate text outputs longer than this (default 2000).
         python_bin: Python binary where marimo is installed. Use this when
             marimo needs to run in a different env than the MCP server
-            (e.g. ``"conda run -n cogpy python"`` for project compute libs).
+            (e.g. ``"pixi run -e compute python"`` for project compute libs).
             Empty string = use the MCP server's own Python.
 
     Returns:
@@ -5600,7 +5599,7 @@ def mcp_nb_snapshot(
 
     # Resolve marimo command
     if python_bin:
-        # User-specified Python (e.g. "conda run -n cogpy python")
+        # User-specified Python (e.g. "pixi run -e compute python")
         marimo_cmd = python_bin.split() + ["-m", "marimo"]
     else:
         marimo_cmd = getattr(backend, "_marimo_cmd", None) or ["marimo"]
@@ -5748,8 +5747,7 @@ def mcp_dag_export(
         output_format: ``dot``, ``mermaid``, ``svg`` (requires graphviz), or
             ``json`` (only with d3dag).
         snakemake_cmd: Command tokens to invoke snakemake (e.g.
-            ``["pixi", "run", "snakemake"]`` or
-            ``["conda", "run", "-n", "cogpy", "snakemake"]``).
+            ``["pixi", "run", "snakemake"]`` or ``["snakemake"]``).
     """
     import subprocess
 
@@ -5808,7 +5806,7 @@ def mcp_dag_export(
         dot_bin = _find_dot()
         if dot_bin is None:
             return {
-                "error": "graphviz 'dot' not found — install with: conda install -c conda-forge graphviz",
+                "error": "graphviz 'dot' not found — install with: pixi global install graphviz",
                 "dot": graph_output,
             }
         try:
@@ -6736,8 +6734,7 @@ def mcp_run(
         retries: Number of times to retry failing jobs (default 0).
         extra_args: Additional Snakemake CLI arguments.
         snakemake_cmd: Command tokens to invoke snakemake (e.g.
-            ``["pixi", "run", "snakemake"]`` or
-            ``["conda", "run", "-n", "cogpy", "snakemake"]``).
+            ``["pixi", "run", "snakemake"]`` or ``["snakemake"]``).
             Defaults to ``["snakemake"]``.
         wildcards: Entity filters for scoping runs (e.g.
             ``{"subject": "01", "session": "04"}``).  Maps to
