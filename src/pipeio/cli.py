@@ -1,4 +1,5 @@
 """CLI entry point for pipeio."""
+# PYTHON_ARGCOMPLETE_OK
 
 from __future__ import annotations
 
@@ -112,6 +113,40 @@ def _profile_args(root: Path, flow_dir: Path, existing_args: list[str] | None = 
     if out:
         print(f"pipeio: injecting {' '.join(out)}", file=sys.stderr)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Shell completion (argcomplete)
+# ---------------------------------------------------------------------------
+
+def _completion_root(parsed_args: argparse.Namespace | None) -> Path:
+    """Project root for a completion call — honors an already-typed --root."""
+    explicit = getattr(parsed_args, "root", None)
+    return Path(explicit) if explicit else _find_root()
+
+
+def _flow_completer(prefix: str = "", parsed_args=None, **kwargs) -> list[str]:
+    """Complete flow names from the pipeio registry."""
+    from pipeio.notebook.lifecycle import flow_names
+
+    try:
+        return [n for n in flow_names(_completion_root(parsed_args)) if n.startswith(prefix)]
+    except Exception:
+        return []
+
+
+def _notebook_completer(prefix: str = "", parsed_args=None, **kwargs) -> list[str]:
+    """Complete notebook names, scoped to the flow already on the command line."""
+    from pipeio.notebook.lifecycle import list_flow_notebooks
+
+    flow = getattr(parsed_args, "flow", None)
+    if not flow:
+        return []
+    try:
+        names = {c["name"] for c in list_flow_notebooks(_completion_root(parsed_args), flow)}
+    except Exception:
+        return []
+    return sorted(n for n in names if n.startswith(prefix))
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -1124,6 +1159,54 @@ def _cmd_nb_lab(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_nb_open(args: argparse.Namespace) -> int:
+    from pipeio.notebook.lifecycle import nb_open
+
+    root = Path(args.root) if args.root else _find_root()
+    workspace = "demo" if getattr(args, "demo", False) else ""
+
+    # `nb open flow nb -- --sandbox` → argparse keeps the separator
+    extra = list(getattr(args, "marimo_args", None) or [])
+    if extra and extra[0] == "--":
+        extra = extra[1:]
+
+    result = nb_open(
+        root,
+        args.flow,
+        args.notebook,
+        workspace=workspace,
+        port=getattr(args, "port", 0) or 0,
+        host=getattr(args, "host", "0.0.0.0"),
+        headless=not getattr(args, "no_headless", False),
+        reuse=not getattr(args, "force", False),
+        extra_args=extra,
+    )
+
+    if "error" in result:
+        print(result["error"], file=sys.stderr)
+        candidates = result.get("candidates") or []
+        if candidates:
+            kind = result.get("candidate_kind", "candidate")
+            print(f"Available {kind}s: {', '.join(candidates)}", file=sys.stderr)
+        return 1
+
+    print(f"Notebook: {result['notebook_path']}")
+    if result.get("reused"):
+        print(f"Already running: {result['url']}  (pid {result.get('pid')})")
+        print("  Re-run with --force to start a second server anyway.")
+        return 0
+
+    if result.get("status") == "started":
+        print(f"Started marimo: {result['url']}  (pid {result.get('pid')})")
+    else:
+        print(f"marimo pid {result.get('pid')} — {result.get('warning') or result.get('error', '')}")
+    if result.get("log"):
+        print(f"  log: {result['log']}")
+    if result.get("log_tail"):
+        print(result["log_tail"], file=sys.stderr)
+    return 0 if result.get("status") == "started" else 1
+
+
 def _cmd_nb_exec(args: argparse.Namespace) -> int:
     from pipeio.notebook.lifecycle import nb_exec
 
@@ -1380,6 +1463,25 @@ def main(argv: list[str] | None = None) -> int:
     nb_lab_p.add_argument("--sync", action="store_true", help="Sync py→ipynb before linking")
     nb_lab_p.add_argument("--refresh", action="store_true", help="Refresh manifest only (no Jupyter launch)")
 
+    nb_open_p = nb_sub.add_parser(
+        "open", help="Launch (or attach to) a marimo server for a notebook",
+    )
+    nb_open_p.add_argument("flow", help="Flow name").completer = _flow_completer
+    nb_open_p.add_argument(
+        "notebook", help="Notebook name (with or without .py)",
+    ).completer = _notebook_completer
+    nb_open_p.add_argument("--port", type=int, default=0, help="Pin the port (default: auto-pick a free one)")
+    nb_open_p.add_argument("--demo", action="store_true", help="Resolve in the demo/ workspace (default: explore/)")
+    nb_open_p.add_argument("--host", default="0.0.0.0", help="Bind address (default 0.0.0.0, reachable over SSH)")
+    nb_open_p.add_argument("--no-headless", action="store_true", help="Let marimo open a browser")
+    nb_open_p.add_argument("--force", action="store_true", help="Launch even if a server already serves this notebook")
+    # nargs="*" (not REMAINDER): keeps --port/--demo parseable after the
+    # positionals, while a bare '--' still forwards the rest to marimo.
+    nb_open_p.add_argument(
+        "marimo_args", nargs="*",
+        help="Extra marimo args, after '--' (e.g. -- --sandbox)",
+    )
+
     # pipeio registry {scan,validate}
     reg_p = sub.add_parser("registry", help="Pipeline registry")
     reg_p.add_argument("--root", dest="root", help="Project root")
@@ -1408,6 +1510,15 @@ def main(argv: list[str] | None = None) -> int:
     con_p.add_argument("--root", dest="root", help="Project root")
     con_sub = con_p.add_subparsers(dest="contracts_command")
     con_sub.add_parser("validate", help="Validate pipeline inputs/outputs")
+
+    # Shell completion: one-time setup is
+    #   eval "$(register-python-argcomplete pipeio)"
+    try:
+        import argcomplete
+    except ImportError:
+        pass
+    else:
+        argcomplete.autocomplete(parser)
 
     args = parser.parse_args(argv)
 
@@ -1480,6 +1591,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_nb_publish(args)
         if args.nb_command == "lab":
             return _cmd_nb_lab(args)
+        if args.nb_command == "open":
+            return _cmd_nb_open(args)
         if args.nb_command == "scan":
             return _cmd_nb_scan(args)
         if args.nb_command == "migrate":

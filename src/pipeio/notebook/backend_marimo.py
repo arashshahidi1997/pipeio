@@ -24,6 +24,20 @@ _CELL_DECORATOR_RE = re.compile(
 )
 
 
+def is_marimo_source(py_path: Path) -> bool:
+    """Return True if *py_path* has the marimo notebook signature.
+
+    Pure text check: works without marimo installed, so callers that only
+    need to classify files (e.g. a server env launching marimo through a
+    separate ``python_bin``) still see marimo notebooks.
+    """
+    try:
+        head = py_path.read_text(encoding="utf-8", errors="ignore")[:4096]
+        return bool(_MARIMO_IMPORT_RE.search(head) and _MARIMO_APP_RE.search(head))
+    except Exception:
+        return False
+
+
 class MarimoBackend:
     """Marimo reactive notebook backend."""
 
@@ -62,11 +76,7 @@ class MarimoBackend:
 
     def detect(self, py_path: Path) -> bool:
         """Return True if *py_path* is a marimo-format notebook."""
-        try:
-            head = py_path.read_text(encoding="utf-8", errors="ignore")[:4096]
-            return bool(_MARIMO_IMPORT_RE.search(head) and _MARIMO_APP_RE.search(head))
-        except Exception:
-            return False
+        return is_marimo_source(py_path)
 
     # ------------------------------------------------------------------
     # Output paths

@@ -949,6 +949,223 @@ def nb_migrate(root: Path, *, dry_run: bool = True) -> list[dict[str, Any]]:
     return actions
 
 
+# ---------------------------------------------------------------------------
+# Flow-scoped notebook resolution (launch targets + shell completion)
+# ---------------------------------------------------------------------------
+
+WORKSPACES = ("explore", "demo")
+
+
+def flow_code_dir(root: Path, flow: str) -> Path | None:
+    """Return the absolute code directory of *flow*, or None if unknown."""
+    from pipeio.registry import PipelineRegistry, find_registry
+
+    reg_path = find_registry(root)
+    if reg_path is None:
+        return None
+    try:
+        entry = PipelineRegistry.from_yaml(reg_path).get(flow)
+    except Exception:
+        return None
+    code_path = Path(entry.code_path)
+    return code_path if code_path.is_absolute() else root / code_path
+
+
+def flow_names(root: Path) -> list[str]:
+    """Return registered flow names (empty when there is no registry)."""
+    from pipeio.registry import PipelineRegistry, find_registry
+
+    reg_path = find_registry(root)
+    if reg_path is None:
+        return []
+    try:
+        return sorted({f.name for f in PipelineRegistry.from_yaml(reg_path).list_flows()})
+    except Exception:
+        return []
+
+
+def list_flow_notebooks(root: Path, flow: str) -> list[dict[str, str]]:
+    """Return every notebook of *flow* as ``{name, workspace, path, format}``.
+
+    Covers both workspace layouts — ``notebooks/{explore,demo}/<name>.py``
+    (marimo) and ``notebooks/{explore,demo}/.src/<name>.py`` (percent) — plus
+    the flat ``notebooks/`` fallback.  Used both as the launch-target lookup
+    and as the shell-completion candidate list.
+    """
+    from pipeio.notebook.backend import detect_format
+    from pipeio.notebook.backend_marimo import is_marimo_source
+
+    flow_dir = flow_code_dir(root, flow)
+    if flow_dir is None:
+        return []
+
+    nb_root = flow_dir / "notebooks"
+    found: dict[tuple[str, str], dict[str, str]] = {}
+    for workspace in (*WORKSPACES, ""):
+        base = nb_root / workspace if workspace else nb_root
+        for sub in ("", ".src"):
+            directory = base / sub if sub else base
+            if not directory.is_dir():
+                continue
+            for py_file in sorted(directory.glob("*.py")):
+                # Signature check first: the marimo backend only registers
+                # when marimo is importable here, but nb_open launches it
+                # through a separate python_bin.
+                is_marimo = is_marimo_source(py_file)
+                if not (is_marimo or _is_notebook(py_file)):
+                    continue
+                key = (py_file.stem, workspace)
+                found.setdefault(key, {
+                    "name": py_file.stem,
+                    "workspace": workspace,
+                    "path": str(py_file),
+                    "format": "marimo" if is_marimo else detect_format(py_file),
+                })
+
+    return [found[k] for k in sorted(found)]
+
+
+def resolve_flow_notebook(
+    root: Path, flow: str, name: str, *, workspace: str = "",
+) -> dict[str, Any]:
+    """Resolve ``(flow, name)`` to one notebook.
+
+    Accepts the name with or without ``.py`` and with a workspace prefix
+    (``explore/foo``).  Defaults to the ``explore`` workspace when a name
+    exists in both.  On failure returns ``{"error": ..., "candidates": [...]}``
+    so callers can show the user what they could have typed.
+    """
+    flow_dir = flow_code_dir(root, flow)
+    if flow_dir is None:
+        return {
+            "error": f"Unknown flow: {flow}",
+            "candidates": flow_names(root),
+            "candidate_kind": "flow",
+        }
+
+    stem = name[:-3] if name.endswith(".py") else name
+    parts = [p for p in Path(stem).parts if p not in (".", "/")]
+    if len(parts) > 1 and parts[0] in WORKSPACES and not workspace:
+        workspace = parts[0]
+    stem = parts[-1] if parts else stem
+
+    candidates = list_flow_notebooks(root, flow)
+    matches = [c for c in candidates if c["name"] == stem]
+    if workspace:
+        matches = [c for c in matches if c["workspace"] == workspace]
+
+    if not matches:
+        scope = f" in workspace '{workspace}'" if workspace else ""
+        return {
+            "error": f"Unknown notebook '{stem}' in flow '{flow}'{scope}",
+            "candidates": [
+                f"{c['workspace']}/{c['name']}" if c["workspace"] else c["name"]
+                for c in candidates
+            ],
+            "candidate_kind": "notebook",
+        }
+
+    # explore is the pairing default; demo only when asked for or alone
+    order = {"explore": 0, "": 1, "demo": 2}
+    best = sorted(matches, key=lambda c: order.get(c["workspace"], 3))[0]
+    return {**best, "flow": flow, "flow_dir": str(flow_dir)}
+
+
+# ---------------------------------------------------------------------------
+# Launch (marimo)
+# ---------------------------------------------------------------------------
+
+def marimo_command(python_bin: "str | list[str] | None" = None) -> list[str]:
+    """Resolve the command prefix used to invoke marimo.
+
+    *python_bin* may be a multi-word launcher (``"pixi run python"``,
+    ``"pixi run -e compute python"``), so string forms are shell-split.
+    """
+    if python_bin:
+        import shlex
+        prefix = (list(python_bin) if isinstance(python_bin, (list, tuple))
+                  else shlex.split(python_bin))
+        return [*prefix, "-m", "marimo"]
+    try:
+        from pipeio.notebook.backend import get_backend
+        return list(get_backend("marimo")._marimo_cmd)
+    except Exception:
+        return ["marimo"]
+
+
+def nb_open(
+    root: Path,
+    flow: str,
+    name: str,
+    *,
+    workspace: str = "",
+    port: int = 0,
+    host: str = "0.0.0.0",
+    headless: bool = True,
+    reuse: bool = True,
+    python_bin: "str | list[str] | None" = None,
+    extra_args: "list[str] | tuple[str, ...]" = (),
+    log_path: Path | None = None,
+    timeout: float = 25.0,
+) -> dict[str, Any]:
+    """Launch (or attach to) a marimo server for one of a flow's notebooks.
+
+    The server is started headless and token-less so it registers in marimo's
+    local server registry — that is what lets an agent discover and attach to
+    it.  When *reuse* is True (default) and a live server already serves the
+    resolved notebook, its URL is returned instead of starting a duplicate:
+    two servers on one file means the stale one silently saves over the other's
+    edits.
+
+    Returns ``{status, reused, url, host, port, pid, server_id, session_id,
+    notebook_path, flow, name, format, workspace}`` or ``{"error": ...}``.
+    """
+    from pipeio.notebook import marimo_server as ms
+
+    resolved = resolve_flow_notebook(root, flow, name, workspace=workspace)
+    if "error" in resolved:
+        return resolved
+
+    py_path = Path(resolved["path"])
+    if resolved["format"] != "marimo":
+        return {
+            "error": f"'{resolved['name']}' is a {resolved['format']}-format notebook; "
+                     "nb_open launches marimo servers. Use nb_lab for Jupyter Lab.",
+            "notebook_path": str(py_path),
+            "format": resolved["format"],
+        }
+
+    context = {
+        "flow": flow,
+        "name": resolved["name"],
+        "workspace": resolved["workspace"],
+        "format": resolved["format"],
+        "notebook_path": str(py_path),
+    }
+
+    if reuse:
+        existing = ms.find_server_for_notebook(py_path)
+        if existing is not None:
+            return {**context, **existing, "status": "reused", "reused": True}
+
+    if log_path is None:
+        log_path = (root / ".projio" / "pipeio" / "logs"
+                    / f"marimo-{flow}-{resolved['name']}.log")
+
+    result = ms.launch(
+        py_path,
+        marimo_cmd=marimo_command(python_bin),
+        cwd=root,
+        host=host,
+        port=port,
+        headless=headless,
+        extra_args=list(extra_args),
+        log_path=log_path,
+        timeout=timeout,
+    )
+    return {**context, **result, "reused": False}
+
+
 def nb_lab(
     root: Path,
     *,

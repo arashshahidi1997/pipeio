@@ -158,6 +158,7 @@ pipeio flow run <flow> [-c/-n/-f]        — launch snakemake in screen session
 pipeio flow mods <flow>                  — list mods and rules
 pipeio nb pair|sync|exec|publish         — notebook lifecycle
 pipeio nb status                         — notebook sync/publish status
+pipeio nb open <flow> <nb> [--port N]    — launch/attach headless marimo (tab-completes)
 pipeio registry scan                     — discover flows from filesystem
 pipeio registry validate                 — validate registry consistency
 pipeio contracts validate                — check pipeline I/O contracts
@@ -171,7 +172,7 @@ Tools exposed via projio's MCP server (58 tools across 10 categories):
 
 **Flow & registry (5):** `pipeio_flow_list`, `pipeio_flow_status`, `pipeio_flow_audit` (read-only compliance check against [pipeline-docs.md](docs/specs/pipeio/pipeline-docs.md)), `pipeio_registry_scan`, `pipeio_registry_validate`
 
-**Notebook lifecycle (20):** `pipeio_nb_status`, `pipeio_nb_create` (accepts `format` param), `pipeio_nb_update`, `pipeio_nb_move`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`, `pipeio_nb_promote`, `pipeio_nb_extract` (renamed from `pipeio_nb_report`), `pipeio_nb_validate` (structural validation for percent and marimo), `pipeio_nb_watch` (marimo live editing), `pipeio_nb_snapshot` (execute marimo + return cell outputs)
+**Notebook lifecycle (21):** `pipeio_nb_status`, `pipeio_nb_create` (accepts `format` param), `pipeio_nb_update`, `pipeio_nb_move`, `pipeio_nb_sync`, `pipeio_nb_sync_flow`, `pipeio_nb_diff`, `pipeio_nb_scan`, `pipeio_nb_read`, `pipeio_nb_audit`, `pipeio_nb_lab`, `pipeio_nb_publish`, `pipeio_nb_analyze`, `pipeio_nb_exec`, `pipeio_nb_pipeline`, `pipeio_nb_promote`, `pipeio_nb_extract` (renamed from `pipeio_nb_report`), `pipeio_nb_validate` (structural validation for percent and marimo), `pipeio_nb_open` (launch or attach to a headless marimo server; dedupes against already-running servers), `pipeio_nb_watch` (marimo live editing), `pipeio_nb_snapshot` (execute marimo + return cell outputs)
 
 **Mod management (4):** `pipeio_mod_list`, `pipeio_mod_resolve`, `pipeio_mod_context`, `pipeio_mod_create`
 
@@ -210,8 +211,9 @@ src/pipeio/
 │   ├── backend.py       # NotebookBackend protocol, registry, format detection
 │   ├── backend_percent.py  # Jupytext percent-format backend
 │   ├── backend_marimo.py   # Marimo reactive backend (optional)
+│   ├── marimo_server.py # marimo server registry: discover, dedupe, launch
 │   ├── config.py        # NotebookConfig (notebook.yml model, format field)
-│   ├── lifecycle.py     # pair, sync, status, lab, publish (dispatches via backend)
+│   ├── lifecycle.py     # pair, sync, status, lab, open, publish (dispatches via backend)
 │   └── analyze.py       # Static notebook analysis (format-aware cell splitting)
 ├── scaffold/
 │   └── __init__.py      # Flow/mod scaffolding

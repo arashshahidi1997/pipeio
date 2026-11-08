@@ -5544,6 +5544,58 @@ def mcp_nb_watch(
         return {"error": "marimo command not found. Install with: pip install marimo"}
 
 
+def mcp_nb_open(
+    root: Path,
+    flow: str,
+    name: str,
+    port: int = 0,
+    demo: bool = False,
+    reuse: bool = True,
+    host: str = "0.0.0.0",
+    python_bin: str = "",
+    timeout: float = 25.0,
+) -> dict[str, Any]:
+    """Launch (or attach to) a headless marimo server for a flow's notebook.
+
+    The server is started with ``--headless --no-token --host <host>`` and no
+    pinned port unless *port* is given, so marimo picks a free one and several
+    notebooks can coexist.  ``--no-token`` is what makes the server appear in
+    marimo's local registry, so this one call both launches and yields the
+    coordinates an agent needs to attach.
+
+    Args:
+        root: Project root.
+        flow: Flow name.
+        name: Notebook stem (with or without ``.py``).
+        port: Pin the port (0 = let marimo pick a free one).
+        demo: Resolve in the ``demo/`` workspace instead of ``explore/``.
+        reuse: Return the existing server when one already serves this
+            notebook, instead of starting a duplicate (default True).
+        host: Bind address (default ``0.0.0.0`` — reachable over SSH).
+        python_bin: Python where marimo is installed, e.g.
+            ``"pixi run python"``. Empty = auto-detect.
+        timeout: Seconds to wait for the server to register.
+
+    Returns:
+        dict with ``url``, ``host``, ``port``, ``pid``, ``server_id``,
+        ``session_id``, ``notebook_path``, ``reused`` — or ``error`` plus
+        ``candidates`` when the flow/notebook is unknown.
+    """
+    from pipeio.notebook.lifecycle import nb_open
+
+    return nb_open(
+        root,
+        flow,
+        name,
+        workspace="demo" if demo else "",
+        port=port,
+        host=host,
+        reuse=reuse,
+        python_bin=python_bin or None,
+        timeout=timeout,
+    )
+
+
 def mcp_nb_snapshot(
     root: Path,
     flow: str,
