@@ -120,6 +120,10 @@ Copy executed notebooks to the documentation directory:
 
 - If `publish_myst: true` → copy `.md` to `docs_dir/` with prefix
 - If `publish_html: true` → render `.ipynb` to HTML, copy to `docs_dir/`
+- Marimo notebooks (no `.ipynb`/`.md` pair) → `marimo export html` on the
+  `.py`, which executes it; run it in the project env (`pipeio_nb_publish`
+  resolves it, or pass `python_bin`). `docs_collect` copies that HTML but
+  never executes notebooks.
 - Can also publish `.ipynb` directly for embedding
 
 **Path construction**: `{docs_dir}/{prefix}{notebook_name}.{ext}`

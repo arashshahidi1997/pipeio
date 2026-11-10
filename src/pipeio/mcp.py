@@ -567,6 +567,49 @@ def _flow_readme(flow: str) -> str:
     )
 
 
+def _flow_snakefile(flow: str, root: Path | None = None) -> str:
+    """Scaffold Snakefile for *flow* (shared by ``pipeio flow new`` and MCP).
+
+    The project can add lines after ``configfile:`` through
+    ``.projio/pipeio/config.yml``::
+
+        scaffold:
+          snakefile_includes:          # one `include:` line each, in order
+            - ../_common/provenance.smk
+          snakefile_preamble: |        # free text, emitted after the includes
+            from mylib.flow import setup
+
+    Include paths are written as given (Snakemake resolves them relative to
+    the Snakefile, so ``../_common/x.smk`` points at
+    ``code/pipelines/_common/``; ``_``-prefixed dirs are skipped by registry
+    scan).
+    """
+    scaffold: dict[str, Any] = {}
+    if root is not None:
+        from pipeio.cli import _load_pipeio_config
+
+        try:
+            scaffold = _load_pipeio_config(root).get("scaffold") or {}
+        except Exception:
+            scaffold = {}
+    includes = scaffold.get("snakefile_includes") or []
+    if isinstance(includes, str):
+        includes = [includes]
+    preamble = str(scaffold.get("snakefile_preamble") or "").strip("\n")
+
+    lines = [
+        f"# Snakefile for {flow}",
+        "from pathlib import Path",
+        "",
+        'configfile: "config.yml"',
+    ]
+    lines += [f'include: "{inc}"' for inc in includes]
+    if preamble:
+        lines += ["", preamble]
+    lines += ["", "", "rule all:", "    input: []", ""]
+    return "\n".join(lines)
+
+
 def mcp_flow_new(
     root: Path,
     flow: str,
@@ -643,17 +686,7 @@ def mcp_flow_new(
     # Snakefile
     snakefile = flow_dir / "Snakefile"
     if not snakefile.exists():
-        snakefile.write_text(
-            f"# Snakefile for {flow}\n"
-            f"from pathlib import Path\n"
-            f"\n"
-            f"configfile: \"config.yml\"\n"
-            f"\n"
-            f"\n"
-            f"rule all:\n"
-            f"    input: []\n",
-            encoding="utf-8",
-        )
+        snakefile.write_text(_flow_snakefile(flow, root), encoding="utf-8")
         created.append("Snakefile")
 
     # publish.yml
@@ -2510,11 +2543,15 @@ def mcp_nb_publish(
     flow: str,
     name: str,
     format: str = "",
+    python_bin: str = "",
+    timeout: int = 600,
 ) -> dict[str, Any]:
     """Publish a notebook to the docs tree.
 
     Publishes to ``docs/pipelines/<pipe>/<flow>/notebooks/``.
-    Supports both MyST markdown and HTML output.
+    Percent notebooks: MyST markdown (copied) and/or HTML (nbconvert on the
+    paired ``.ipynb``). Marimo notebooks: HTML only, via ``marimo export
+    html``, which executes the notebook (no ``.ipynb``, no sync step).
 
     When *format* is empty, publishes whatever the notebook.yml entry
     has enabled (publish_myst and/or publish_html).
@@ -2524,11 +2561,16 @@ def mcp_nb_publish(
         flow: Flow name.
         name: Notebook basename (without extension).
         format: Force a specific format ('myst', 'html', or '' for auto).
+        python_bin: Python that has marimo and the notebook's imports, e.g.
+            ``"pixi run python"`` (marimo only). Empty = this env's marimo.
+        timeout: Seconds allowed for ``marimo export html`` (marimo only).
     """
     import shutil
 
+    from pipeio.notebook.backend import get_backend
+    from pipeio.notebook.backend_marimo import is_marimo_source
     from pipeio.notebook.config import NotebookConfig
-    from pipeio.notebook.lifecycle import _nb_output_paths, _nbconvert_html
+    from pipeio.notebook.lifecycle import _nb_output_paths, _nbconvert_html, marimo_command
     from pipeio.registry import PipelineRegistry
 
     registry_path = _find_registry(root)
@@ -2556,6 +2598,7 @@ def mcp_nb_publish(
     # Determine what to publish from notebook.yml config
     publish_myst = True
     publish_html = False
+    nb_format = ""
     nb_cfg_path = flow_dir / "notebooks" / "notebook.yml"
     if nb_cfg_path.exists():
         try:
@@ -2564,9 +2607,12 @@ def mcp_nb_publish(
                 if Path(nb.path).stem == name:
                     publish_myst = nb.publish_myst
                     publish_html = nb.publish_html
+                    nb_format = nb_cfg.resolve_format(nb)
                     break
         except Exception:
             pass
+
+    entry_publish_html = publish_html  # what docs_collect will honour
 
     # Override with explicit format
     if format == "myst":
@@ -2576,6 +2622,47 @@ def mcp_nb_publish(
 
     # Write to .build/ only — docs_collect handles the final copy to docs/
     build_dir = flow_dir / ".build" / "notebooks"
+
+    if nb_format == "marimo" or (not nb_format and py_path.exists() and is_marimo_source(py_path)):
+        # Marimo is single-file: its published form is the executed HTML
+        # export. There is no MyST/ipynb pairing to fall back on.
+        if format == "myst":
+            return {
+                "error": f"Notebook {name!r} is marimo: MyST publishing is percent-only.",
+                "hint": "Publish marimo notebooks as HTML (format='html' or publish_html: true).",
+            }
+        if not py_path.exists():
+            return {"error": f"Notebook not found: {py_path}"}
+        backend = get_backend("marimo")
+        build_dest = build_dir / f"{name}.html"
+        res = backend.export(
+            py_path,
+            output_format="html",
+            output_path=build_dest,
+            marimo_cmd=marimo_command(python_bin) if python_bin else None,
+            timeout=timeout,
+        )
+        if not res.get("exported"):
+            return {
+                "error": f"marimo export html failed: {res.get('error', '')}",
+                "command": res.get("command"),
+                "hint": "Pass python_bin for the env that has marimo and the "
+                "notebook's imports (e.g. 'pixi run python').",
+            }
+        out: dict[str, Any] = {
+            "published": [str(build_dest)],
+            "flow": flow,
+            "name": name,
+            "format": "marimo",
+            "hint": "Run pipeio_docs_collect to copy to docs/pipelines/.",
+        }
+        if not entry_publish_html:
+            out["warning"] = (
+                "publish_html is not set for this entry in notebook.yml, so "
+                "docs_collect will not copy the HTML; set publish_html: true."
+            )
+        return out
+
     build_dir.mkdir(parents=True, exist_ok=True)
     published: list[str] = []
 
@@ -5649,12 +5736,9 @@ def mcp_nb_snapshot(
             "For percent-format, use nb_exec + nb_read to inspect ipynb outputs.",
         }
 
-    # Resolve marimo command
-    if python_bin:
-        # User-specified Python (e.g. "pixi run -e compute python")
-        marimo_cmd = python_bin.split() + ["-m", "marimo"]
-    else:
-        marimo_cmd = getattr(backend, "_marimo_cmd", None) or ["marimo"]
+    # Resolve marimo command (python_bin may be "pixi run -e compute python")
+    from pipeio.notebook.lifecycle import marimo_command
+    marimo_cmd = marimo_command(python_bin or None)
 
     # Run marimo export session — writes __marimo__/session/<name>.json next to notebook
     session_dir = py_path.parent / "__marimo__" / "session"
@@ -5667,6 +5751,9 @@ def mcp_nb_snapshot(
         "--force-overwrite",
     ]
 
+    import time as _time
+    started = _time.time() - 1  # mtime granularity slack
+
     try:
         result = sp.run(
             cmd,
@@ -5677,18 +5764,15 @@ def mcp_nb_snapshot(
         )
     except sp.TimeoutExpired:
         return {"error": f"Snapshot timed out after {timeout}s"}
-    except FileNotFoundError:
-        return {"error": f"marimo command not found: {marimo_cmd[0]}"}
+    except OSError as exc:  # not found / not executable
+        return {"error": f"marimo command failed to start: {exc}",
+                "hint": "Pass python_bin for the env that has marimo (e.g. 'pixi run python')."}
 
-    # Find the session JSON
+    # Find the session JSON written by *this* run (a file left by an earlier
+    # run would show stale outputs as if they were current).
     session_json = None
-    if expected_json.exists():
+    if expected_json.exists() and expected_json.stat().st_mtime >= started:
         session_json = expected_json
-    elif session_dir.exists():
-        # Fallback: any .json in the session dir
-        for f in session_dir.glob("*.json"):
-            session_json = f
-            break
 
     if session_json is None:
         stderr_text = result.stderr[-1000:] if result.stderr else ""
@@ -5697,6 +5781,7 @@ def mcp_nb_snapshot(
             f"returncode={result.returncode}",
             "stderr": stderr_text,
             "stdout": result.stdout[-500:] if result.stdout else "",
+            "command": cmd,
         }
 
     try:

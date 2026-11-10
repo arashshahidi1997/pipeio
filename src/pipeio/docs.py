@@ -225,6 +225,14 @@ def _write_notebook_index(nb_dir: Path, flow_name: str, files: list[Path]) -> Pa
     return nb_index
 
 
+def _is_marimo_entry(nb_cfg: Any, nb_entry: Any, py_path: Path) -> bool:
+    fmt = nb_cfg.resolve_format(nb_entry)
+    if fmt:
+        return fmt == "marimo"
+    from pipeio.notebook.backend_marimo import is_marimo_source
+    return py_path.exists() and is_marimo_source(py_path)
+
+
 def export_notebooks(ctx: CollectContext) -> list[str]:
     """Export publishable notebook HTML/MyST into ``{flow}/.build/notebooks/``.
 
@@ -263,7 +271,14 @@ def export_notebooks(ctx: CollectContext) -> list[str]:
 
         # HTML only for publish_html: a publish_myst-only entry never becomes
         # public HTML (the .md route below is gated on publish.format).
-        if nb_entry.publish_html:
+        if nb_entry.publish_html and _is_marimo_entry(nb_cfg, nb_entry, py_path):
+            # Marimo HTML comes from `marimo export html`, which executes the
+            # notebook in the project env: nb_publish builds it, collect only
+            # picks it up (never runs notebooks).
+            out = build_nb / f"{name}.html"
+            if out.exists():
+                exported.append(str(out))
+        elif nb_entry.publish_html:
             if ipynb_path.exists():
                 build_nb.mkdir(parents=True, exist_ok=True)
                 out = build_nb / f"{name}.html"

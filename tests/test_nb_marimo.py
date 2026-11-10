@@ -300,12 +300,26 @@ class TestMarimoExport:
 
     @patch("pipeio.notebook.backend_marimo.subprocess.run")
     def test_export_html(self, mock_run, tmp_path):
-        mock_run.return_value = MagicMock(returncode=0)
+        out = tmp_path / "output.html"
+
+        def fake_run(cmd, **kw):
+            out.write_text("<html></html>")
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
         backend = _make_marimo_backend()
         nb = _make_marimo_file(tmp_path)
-        out = tmp_path / "output.html"
         result = backend.export(nb, output_format="html", output_path=out)
         assert result["exported"] is True
+        assert mock_run.call_args.kwargs["cwd"] == str(nb.parent)
+
+    @patch("pipeio.notebook.backend_marimo.subprocess.run")
+    def test_export_without_output_file_fails(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        backend = _make_marimo_backend()
+        nb = _make_marimo_file(tmp_path)
+        result = backend.export(nb, output_format="html", output_path=tmp_path / "o.html")
+        assert result["exported"] is False
 
 
 # ---------------------------------------------------------------------------

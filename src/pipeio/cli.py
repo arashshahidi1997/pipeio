@@ -792,17 +792,8 @@ def _cmd_flow_new(args: argparse.Namespace) -> int:
     # Snakefile (only if new)
     snakefile = flow_dir / "Snakefile"
     if not snakefile.exists():
-        snakefile.write_text(
-            f"# Snakefile for {flow}\n"
-            f"from pathlib import Path\n"
-            f"\n"
-            f"configfile: \"config.yml\"\n"
-            f"\n"
-            f"\n"
-            f"rule all:\n"
-            f"    input: []\n",
-            encoding="utf-8",
-        )
+        from pipeio.mcp import _flow_snakefile
+        snakefile.write_text(_flow_snakefile(flow, root), encoding="utf-8")
         created.append("Snakefile")
 
     # publish.yml (only if new)

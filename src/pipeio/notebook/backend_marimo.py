@@ -1,7 +1,9 @@
 """Marimo reactive notebook backend.
 
 Single-file ``.py`` format with DAG-based execution via ``marimo`` CLI.
-This backend is lazy-loaded and gracefully absent if marimo is not installed.
+The backend is always registered; the ``marimo`` command is resolved lazily
+(or passed in), so a server env without marimo still classifies and drives
+marimo notebooks through the project env.
 """
 
 from __future__ import annotations
@@ -43,32 +45,41 @@ class MarimoBackend:
 
     name = "marimo"
 
-    def __init__(self) -> None:
-        # Verify marimo is importable (but don't import it at module level)
-        self._marimo_cmd = self._find_marimo()
+    def __init__(self, marimo_cmd: "list[str] | None" = None) -> None:
+        # The command is resolved lazily: the backend must register even when
+        # marimo is absent from this (server) env, since detection is a pure
+        # text check and callers usually run marimo through the project env
+        # (``pixi run python -m marimo``) rather than this interpreter.
+        self._cmd = list(marimo_cmd) if marimo_cmd else None
+
+    @property
+    def _marimo_cmd(self) -> list[str]:
+        if getattr(self, "_cmd", None) is None:
+            self._cmd = self._find_marimo()
+        return self._cmd
+
+    @_marimo_cmd.setter
+    def _marimo_cmd(self, value: list[str]) -> None:
+        self._cmd = list(value)
 
     def _find_marimo(self) -> list[str]:
-        """Return the command prefix for invoking marimo."""
+        """Return the command prefix for invoking marimo.
+
+        Falls back to bare ``marimo``; a missing binary then surfaces as a
+        "marimo command not found" error from the operation that needs it.
+        """
         # Try `python -m marimo` first (works in the current env)
         try:
             subprocess.run(
+                # cold imports on network storage can take ~10 s
                 [sys.executable, "-m", "marimo", "--version"],
-                capture_output=True, check=True, timeout=10,
+                capture_output=True, check=True, timeout=60,
             )
             return [sys.executable, "-m", "marimo"]
         except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             pass
-        # Try bare `marimo` command
-        try:
-            subprocess.run(
-                ["marimo", "--version"],
-                capture_output=True, check=True, timeout=10,
-            )
-            return ["marimo"]
-        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            raise ImportError(
-                "marimo not found. Install with: pip install marimo"
-            )
+        # Bare `marimo` on PATH (or the "not found" error later)
+        return ["marimo"]
 
     # ------------------------------------------------------------------
     # Detection
@@ -190,8 +201,17 @@ class MarimoBackend:
         *,
         output_format: str,
         output_path: Path,
+        marimo_cmd: "list[str] | None" = None,
+        timeout: int = 600,
+        cwd: Path | None = None,
     ) -> dict[str, Any]:
-        """Export via ``marimo export``."""
+        """Export via ``marimo export``.
+
+        ``html`` (and ``ipynb``) exports execute the notebook, so *marimo_cmd*
+        should run in the env that has the notebook's imports (e.g.
+        ``["pixi", "run", "python", "-m", "marimo"]``); default is this
+        backend's own command. *cwd* defaults to the notebook's directory.
+        """
         if not py_path.exists():
             return {"exported": False, "error": f"Not found: {py_path}"}
 
@@ -206,23 +226,29 @@ class MarimoBackend:
         marimo_fmt = fmt_map.get(output_format, output_format)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = list(marimo_cmd) if marimo_cmd else self._marimo_cmd
 
         try:
             result = subprocess.run(
-                [*self._marimo_cmd, "export", marimo_fmt, str(py_path),
+                [*cmd, "export", marimo_fmt, str(py_path),
                  "-o", str(output_path)],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=timeout,
+                cwd=str(cwd or py_path.parent),
             )
-            if result.returncode == 0:
+            if result.returncode == 0 and output_path.exists():
                 return {"exported": True, "path": str(output_path), "format": output_format}
-            else:
-                return {"exported": False, "error": result.stderr.strip()}
+            return {
+                "exported": False,
+                "error": (result.stderr.strip() or result.stdout.strip())[-2000:]
+                or f"marimo export exited {result.returncode}",
+                "command": cmd,
+            }
         except subprocess.TimeoutExpired:
-            return {"exported": False, "error": "marimo export timed out"}
-        except FileNotFoundError:
-            return {"exported": False, "error": "marimo command not found"}
+            return {"exported": False, "error": f"marimo export timed out after {timeout}s"}
+        except OSError as exc:  # not found / not executable
+            return {"exported": False, "error": f"marimo command failed to start: {exc}", "command": cmd}
 
     # ------------------------------------------------------------------
     # Cell splitting
