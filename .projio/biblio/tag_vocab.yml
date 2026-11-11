@@ -1,0 +1,74 @@
+# Tag vocabulary for controlled tagging of bibliography entries.
+# Tags follow the format namespace:value (e.g. domain:nlp).
+# Unnamespaced tags are allowed but won't be validated against this vocabulary.
+
+namespaces:
+  domain:
+    description: Research domain or field
+    values:
+      - nlp
+      - cv
+      - ml
+      - neuroscience
+      - robotics
+      - hci
+      - systems
+      - security
+      - bioinformatics
+
+  method:
+    description: Methodology or technique
+    values:
+      - transformer
+      - cnn
+      - rnn
+      - reinforcement-learning
+      - bayesian
+      - graph-neural-network
+      - diffusion
+      - contrastive-learning
+      - self-supervised
+
+  task:
+    description: Specific task or problem
+    values:
+      - classification
+      - generation
+      - segmentation
+      - detection
+      - translation
+      - summarization
+      - question-answering
+      - retrieval
+
+  corpus:
+    description: Dataset or benchmark
+    values:
+      - imagenet
+      - coco
+      - squad
+      - glue
+      - arxiv
+
+# Keyword aliases map common BibTeX keywords to namespace:value tags.
+# Keys are lowercased keyword strings; values are the canonical tag.
+aliases:
+  natural language processing: domain:nlp
+  computer vision: domain:cv
+  machine learning: domain:ml
+  deep learning: domain:ml
+  neural network: domain:ml
+  neural networks: domain:ml
+  convolutional neural network: method:cnn
+  recurrent neural network: method:rnn
+  attention: method:transformer
+  bert: method:transformer
+  gpt: method:transformer
+  object detection: task:detection
+  image classification: task:classification
+  text classification: task:classification
+  sentiment analysis: task:classification
+  machine translation: task:translation
+  information retrieval: task:retrieval
+  text generation: task:generation
+  image segmentation: task:segmentation

@@ -17,3 +17,6 @@ packages:
   pipeio:
     enabled: true
     path: .projio/pipeio
+  figio:
+    enabled: true
+    path: .projio/figio

@@ -1,12 +1,18 @@
 # projio.mk — shared targets, managed by projio
 # Include from your Makefile: -include .projio/projio.mk
 
-PYTHON  ?= python
-DATALAD ?= /storage/share/python/environments/Anaconda3/envs/labpy/bin/datalad
-MKDOCS  ?= /storage/share/python/environments/Anaconda3/envs/labpy/bin/python -m mkdocs
-PROJIO  ?= /storage/share/python/environments/Anaconda3/envs/rag/bin/python -m projio
-PUBLISH ?= /storage2/arash/infra/bin/publish_pypi.sh
-MSG     ?= Update
+PYTHON    ?= python
+SNAKEMAKE ?= snakemake
+DATALAD   ?= datalad
+MKDOCS    ?= /storage2/arash/infra/uv-tools/projio/bin/python -m mkdocs
+PROJIO    ?= projio
+NOTIO     ?= notio
+PANDOC    ?= pandoc
+MATLAB    ?= matlab
+PUBLISH   ?= /storage2/arash/infra/bin/publish_pypi.sh
+MSG       ?= Update
+
+PANDOC_FILTER ?= .projio/filters/include.lua
 
 .PHONY: save push url
 .PHONY: projio-init projio-config-user projio-config-show projio-status projio-auth
@@ -14,7 +20,7 @@ MSG     ?= Update
 
 # --- DataLad targets ---
 save:
-	$(DATALAD) save -m "$(MSG)"
+	$(DATALAD) save -r -m "$(MSG)"
 
 push:
 	$(DATALAD) push --to github
