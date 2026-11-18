@@ -11,11 +11,17 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RegistryMember(BaseModel):
-    """A single output product within a registry group."""
+    """A single output product within a registry group.
+
+    Extra keys (BIDS entities such as ``desc``) are kept: ``BidsPaths``
+    passes the whole member dict to ``bids()``.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     suffix: str
     extension: str
@@ -23,6 +29,8 @@ class RegistryMember(BaseModel):
 
 class RegistryGroup(BaseModel):
     """A group of related outputs (a pipeline stage / family)."""
+
+    model_config = ConfigDict(extra="allow")
 
     base_input: str | None = None
     bids: dict[str, str] = Field(default_factory=dict)
@@ -84,6 +92,13 @@ class FlowConfig(BaseModel):
             if manifest_key in self.extra:
                 result[suffix] = (str(val), str(self.extra[manifest_key]))
         return result
+
+    def raw_registry(self) -> dict[str, Any]:
+        """The registry as plain dicts, the shape ``BidsPaths`` receives."""
+        return {
+            name: grp.model_dump(exclude_none=True)
+            for name, grp in self.registry.items()
+        }
 
     def groups(self) -> list[str]:
         """Return sorted registry group names."""

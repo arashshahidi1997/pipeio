@@ -6321,21 +6321,30 @@ def mcp_target_paths(
     member: str = "",
     entities: dict[str, str] | None = None,
     expand: bool = False,
+    snakefile: bool | None = None,
+    python_bin: str = "",
 ) -> dict[str, Any]:
     """Resolve output paths for a flow's registry entries.
 
-    Uses the ``PipelineContext`` / ``PathResolver`` to translate
-    (group, member, entities) tuples into concrete filesystem paths —
-    the same paths snakemake would target.
+    Paths are built the way the flow's ``BidsPaths`` builds them (shared
+    code in :mod:`pipeio.bidspath`, the flow's bids spec read from its
+    Snakefile), so a resolved path is a target snakemake can build.
 
     **Modes:**
 
     - *resolve* (default): given group + member + entities, returns the
-      single resolved path and whether it exists on disk.
+      single resolved path and whether it exists on disk.  Wildcards the
+      entities leave open are listed in ``missing_entities``.
     - *expand* (``expand=True``): glob the filesystem for all matching
-      paths, optionally filtered by entities (e.g. ``sub=01``).
+      paths, optionally filtered by entities (e.g. ``subject=01``).
     - *list groups* (no group/member): returns available groups and
-      members from the output registry so you know what to ask for.
+      members with their path templates.
+
+    **Families added in the Snakefile:** ``config.yml`` holds only the static
+    registry.  When *group* is not there (or ``snakefile=True``), the
+    Snakefile is loaded in the project env (``python_bin``) with input
+    discovery stubbed, and the registry its ``BidsPaths`` holds is used.
+    The result is cached until a flow file changes.
 
     Args:
         root: Project root.
@@ -6343,11 +6352,19 @@ def mcp_target_paths(
         group: Registry group name (e.g. ``preproc``, ``spectral``).
         member: Registry member name (e.g. ``cleaned``, ``psd``).
         entities: Wildcard entities for path resolution
-            (e.g. ``{"sub": "01", "ses": "04"}``).
+            (e.g. ``{"subject": "01", "session": "04"}``; ``sub``/``ses`` work too).
         expand: If True, enumerate all matching paths on disk instead
             of resolving a single path.
+        snakefile: True = always use the Snakefile's registry, False = never,
+            None (default) = only when *group* is not in ``config.yml``.
+        python_bin: Project Python with snakemake + snakebids
+            (e.g. ``pixi run python``); used only to load the Snakefile.
     """
-    from pipeio.resolver import PipelineContext
+    import re as _re
+
+    from pipeio.bidspath import flow_bids_spec
+    from pipeio.config import FlowConfig
+    from pipeio.resolver import SimpleResolver
 
     registry_path = _find_registry(root)
     if not registry_path:
@@ -6360,94 +6377,127 @@ def mcp_target_paths(
         entry = registry.get(flow)
     except (KeyError, ValueError) as exc:
         return {"error": str(exc)}
-
+    if not entry.config_path:
+        return {"error": f"No config_path for flow {entry.name}"}
+    cfg_path = Path(entry.config_path)
+    if not cfg_path.is_absolute():
+        cfg_path = root / cfg_path
     try:
-        ctx = PipelineContext.from_registry(
-            flow, root=root, registry=registry,
-        )
-    except (FileNotFoundError, Exception) as exc:
+        flow_config = FlowConfig.from_yaml(cfg_path)
+    except Exception as exc:
         return {"error": str(exc)}
+    flow_dir = cfg_path.parent
+
+    resolver = SimpleResolver(flow_config, root, spec=flow_bids_spec(flow_dir))
+    source = "config.yml"
+    note = ""
+    use_sf = snakefile is True or (
+        snakefile is None and bool(group) and group not in resolver.registry
+    )
+    if use_sf:
+        from pipeio.snakefile_registry import pick_paths, snakefile_registry
+
+        try:
+            result = snakefile_registry(
+                root, entry.name, flow_dir, python_cmd=python_bin,
+            )
+            info = pick_paths(result, root / flow_config.output_dir)
+        except RuntimeError as exc:
+            info = None
+            note = str(exc)
+        if info:
+            resolver = SimpleResolver(
+                flow_config, root,
+                spec=result.get("spec") or "latest",
+                registry=info["registry"],
+                base_wildcards=info.get("base_wildcards") or {},
+                out_root=Path(info["root_dir"]),
+            )
+            source = "Snakefile"
+        elif not note:
+            note = "The Snakefile defines no BidsPaths."
+
+    base = {"flow": entry.name, "source": source}
+    if note:
+        base["snakefile_error"] = note
+
+    if group and group not in resolver.registry:
+        known = ", ".join(sorted(resolver.registry)) or "(none)"
+        out = {**base, "error": f"Unknown group {group!r}. Known: {known}"}
+        if note:
+            out["hint"] = (
+                "The group may be added in the Snakefile, which could not be "
+                "loaded; pass python_bin for the project env (e.g. 'pixi run python')."
+            )
+        return out
 
     # -- List mode: no group specified → show available groups/members --
     if not group:
         groups_info = {}
-        for g in ctx.groups():
-            members = ctx.products(g)
-            pattern = {m: ctx.pattern(g, m) for m in members}
-            groups_info[g] = {"members": members, "patterns": pattern}
-        return {
-            "flow": entry.name,
-            "flow": entry.name,
-            "mode": "list",
-            "groups": groups_info,
-        }
+        for g in sorted(resolver.registry):
+            members = list((resolver.registry[g].get("members") or {}).keys())
+            patterns = {}
+            for m in members:
+                try:
+                    patterns[m] = resolver.pattern(g, m)
+                except (KeyError, ValueError) as exc:
+                    patterns[m] = f"<error: {exc}>"
+            groups_info[g] = {"members": members, "patterns": patterns}
+        out = {**base, "mode": "list", "groups": groups_info}
+        if source == "config.yml":
+            out["hint"] = (
+                "Static registry from config.yml; pass snakefile=True to include "
+                "families the Snakefile adds."
+            )
+        return out
+
+    members_of_group = list((resolver.registry[group].get("members") or {}).keys())
 
     # -- Expand mode: glob for all matching paths on disk --
     if expand:
         ent = entities or {}
-        if member:
-            # Expand a single member
-            paths = ctx.expand(group, member, **ent)
-            return {
-                "flow": entry.name,
-                "flow": entry.name,
-                "mode": "expand",
-                "group": group,
-                "member": member,
-                "entities_filter": ent,
-                "paths": [str(p) for p in paths],
-                "count": len(paths),
-            }
-        else:
-            # Expand all members in the group
-            all_results: dict[str, Any] = {}
-            for m in ctx.products(group):
-                paths = ctx.expand(group, m, **ent)
-                all_results[m] = {
-                    "paths": [str(p) for p in paths],
-                    "count": len(paths),
+        try:
+            if member:
+                paths = resolver.expand(group, member, **ent)
+                return {
+                    **base, "mode": "expand", "group": group, "member": member,
+                    "entities_filter": ent,
+                    "paths": [str(p) for p in paths], "count": len(paths),
                 }
-            return {
-                "flow": entry.name,
-                "flow": entry.name,
-                "mode": "expand",
-                "group": group,
-                "entities_filter": ent,
-                "members": all_results,
-            }
+            all_results: dict[str, Any] = {}
+            for m in members_of_group:
+                paths = resolver.expand(group, m, **ent)
+                all_results[m] = {"paths": [str(p) for p in paths], "count": len(paths)}
+        except (KeyError, ValueError) as exc:
+            return {**base, "error": str(exc)}
+        return {
+            **base, "mode": "expand", "group": group,
+            "entities_filter": ent, "members": all_results,
+        }
 
     # -- Resolve mode: single path from group + member + entities --
     if not member:
         return {"error": "member is required for resolve mode (or use expand=True)"}
 
     ent = entities or {}
-    if not ent:
-        # No entities: show the pattern template instead
-        pattern = ctx.pattern(group, member)
-        return {
-            "flow": entry.name,
-            "flow": entry.name,
-            "mode": "pattern",
-            "group": group,
-            "member": member,
-            "pattern": pattern,
-        }
-
     try:
-        path = ctx.path(group, member, **ent)
-    except KeyError as exc:
-        return {"error": str(exc)}
+        if not ent:
+            return {
+                **base, "mode": "pattern", "group": group, "member": member,
+                "pattern": resolver.pattern(group, member),
+            }
+        path = resolver.resolve(group, member, **ent)
+    except (KeyError, ValueError) as exc:
+        return {**base, "error": str(exc)}
 
-    return {
-        "flow": entry.name,
-        "flow": entry.name,
-        "mode": "resolve",
-        "group": group,
-        "member": member,
-        "entities": ent,
-        "path": str(path),
-        "exists": path.exists(),
+    out = {
+        **base, "mode": "resolve", "group": group, "member": member,
+        "entities": ent, "path": str(path), "exists": path.exists(),
     }
+    missing = sorted(set(_re.findall(r"\{(\w+)\}", str(path))))
+    if missing:
+        out["missing_entities"] = missing
+    return out
 
 
 # ---------------------------------------------------------------------------

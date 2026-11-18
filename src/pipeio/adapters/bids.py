@@ -178,6 +178,22 @@ class _FamilyView(Mapping[str, str]):
         return f"<family {self._family}: {preview}>"
 
 
+class _InputWildcards(Mapping[str, Mapping[str, str]]):
+    """``{input: wildcards}`` view over ``generate_inputs()`` output."""
+
+    def __init__(self, inputs: Mapping[str, Any]) -> None:
+        self._inputs = inputs
+
+    def __getitem__(self, name: str) -> Mapping[str, str]:
+        return self._inputs[name].wildcards
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._inputs)
+
+    def __len__(self) -> int:
+        return len(self._inputs)
+
+
 class BidsPaths(Mapping[str, _FamilyView]):
     """BIDS path resolver using ``snakebids.bids()`` for path construction.
 
@@ -281,67 +297,18 @@ class BidsPaths(Mapping[str, _FamilyView]):
         """
         from snakebids import bids
 
-        if family not in self.registry:
-            raise KeyError(self._unknown_family(family))
+        from pipeio.bidspath import family_kwargs
 
-        fam = self.registry[family]
-
-        if member is None:
-            member = fam.get("default_member") or next(iter(fam["members"]))
-
-        if member not in fam["members"]:
-            raise KeyError(self._unknown_member(family, member))
-
-        mem = fam["members"][member]
-
-        kwargs: dict[str, Any] = {}
-
-        # Inherit wildcard templates from base_input
-        base = fam.get("base_input")
-        if base:
-            if not self.base_inputs:
-                raise ValueError(
-                    f"Family '{family}' specifies base_input='{base}', "
-                    "but no inputs were provided to BidsPaths."
-                )
-            if base not in self.base_inputs:
-                raise KeyError(
-                    f"Family '{family}' specifies base_input='{base}', "
-                    "but no such input found in registry."
-                )
-            kwargs.update(self.base_inputs[base].wildcards)
-
-        # Named wildcard sets
-        wildcard_set = fam.get("wildcards", [])
-        if wildcard_set:
-            if not self.wildcard_sets:
-                raise ValueError(
-                    f"Family '{family}' specifies wildcards='{wildcard_set}', "
-                    "but no wildcard sets were provided to BidsPaths."
-                )
-            if wildcard_set not in self.wildcard_sets:
-                raise KeyError(
-                    f"Family '{family}' specifies wildcards='{wildcard_set}', "
-                    "but no such wildcard set found in registry."
-                )
-            kwargs.update(self.wildcard_sets[wildcard_set])
-
-        # Family-level BIDS defaults
-        kwargs.update(fam.get("bids", {}))
-
-        # Member-level overrides
-        kwargs.update(mem)
-
-        # Caller entity overrides
-        kwargs.update(entities)
-
-        # Root handling
+        kwargs = family_kwargs(
+            self.registry,
+            family,
+            member,
+            entities,
+            base_wildcards=_InputWildcards(self.base_inputs) if self.base_inputs else None,
+            wildcard_sets=self.wildcard_sets,
+        )
         root_rel = kwargs.pop("root", "")
         root = self.root_dir / root_rel if root_rel else self.root_dir
-
-        # Drop YAML nulls
-        kwargs = {k: v for k, v in kwargs.items() if v is not None}
-
         return bids(root=root, **kwargs)
 
     def __repr__(self) -> str:

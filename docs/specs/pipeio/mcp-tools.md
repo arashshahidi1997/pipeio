@@ -406,31 +406,38 @@ pipeio_config_patch(
 
 #### `pipeio_target_paths`
 
-Resolve output paths for a flow's registry entries via `PipelineContext`.
+Resolve output paths for a flow's registry entries, as the flow's `BidsPaths`
+builds them (shared code in `pipeio.bidspath`; bids spec read from the Snakefile).
 
 ```
 pipeio_target_paths(
-    pipe: str, flow: str = "",
+    flow: str = "",
     group: str = "", member: str = "",
-    entities: dict = None,  # e.g. {"sub": "01", "ses": "04"}
+    entities: dict = None,     # e.g. {"subject": "01", "session": "04"}
     expand: bool = False,
+    snakefile: bool | None = None,  # None: use the Snakefile's registry only for unknown groups
+    python_bin: str = "",      # project Python for loading the Snakefile
 ) → dict
 ```
 
 **Modes:**
 
 - **List** (no group): returns all groups, members, and path pattern templates.
-- **Resolve** (group + member + entities): returns a single concrete path and whether it exists.
+- **Resolve** (group + member + entities): returns a single concrete path and whether it exists; open wildcards go to `missing_entities`.
 - **Expand** (`expand=True`): globs the filesystem for all matching paths, filtered by entities.
+
+`source` says where the registry came from: `config.yml`, or `Snakefile` when the
+group is added at runtime (loaded in the project env with input discovery
+stubbed, cached until a flow file changes).
 
 **Returns (resolve mode):**
 ```json
 {
-  "pipe": "preprocess", "flow": "ieeg",
+  "flow": "spectrogram_burst", "source": "config.yml",
   "mode": "resolve",
-  "group": "badlabel", "member": "npy",
-  "entities": {"sub": "01", "ses": "04"},
-  "path": "/project/derivatives/preprocess/badlabel/sub-01/ses-04/sub-01_ses-04_suffix-npy.npy",
+  "group": "bursts", "member": "bursts",
+  "entities": {"subject": "03", "session": "24", "task": "pre"},
+  "path": "/project/derivatives/spectrogram_burst/spectrogram/bursts/sub-03/ses-24/ieeg/sub-03_ses-24_task-pre_bursts.tsv",
   "exists": true
 }
 ```

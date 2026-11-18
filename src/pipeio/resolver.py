@@ -30,87 +30,114 @@ class PathResolver(Protocol):
 
 
 class SimpleResolver:
-    """BIDS-compliant path resolver using registry group metadata.
+    """BIDS path resolver that builds the same paths as the flow's ``BidsPaths``.
 
-    Constructs paths as::
+    Paths follow ``snakebids.bids()`` under the flow's bids spec::
 
-        {output_dir}/sub-{subject}/ses-{session}/{group_root}/{datatype}/
-          sub-{subject}_ses-{session}_task-{task}_..._suffix.extension
+        {output_dir}/{bids.root}/sub-{subject}/ses-{session}/{datatype}/
+          sub-{subject}_ses-{session}_task-{task}_..._{suffix}{extension}
 
-    where ``group_root`` and ``datatype`` come from the ``bids`` dict in the
-    registry group definition.
+    The registry family is merged by :func:`pipeio.bidspath.family_kwargs`
+    (the code ``BidsPaths`` runs), with base-input wildcards read from the
+    config's ``pybids_inputs`` instead of scanning the dataset.
+
+    Args:
+        config: The flow config.
+        root: Project root.
+        spec: snakebids spec name (``v0_0_0``, ``v0_11_0``, ``latest``, ...);
+            detect it with :func:`pipeio.bidspath.flow_bids_spec`.
+        registry: Raw registry dict to resolve against instead of
+            ``config.registry`` (e.g. one read from the evaluated Snakefile,
+            which may add families at runtime).
+        base_wildcards: ``{input: {wildcard: template}}``; defaults to the
+            config's ``pybids_inputs``.
+        out_root: Directory ``bids.root`` is joined to; defaults to
+            ``root / config.output_dir``.
     """
 
-    def __init__(self, config: FlowConfig, root: Path) -> None:
+    def __init__(
+        self,
+        config: FlowConfig,
+        root: Path,
+        *,
+        spec: str = "latest",
+        registry: dict[str, Any] | None = None,
+        base_wildcards: dict[str, dict[str, str]] | None = None,
+        out_root: Path | None = None,
+    ) -> None:
+        from pipeio.bidspath import config_base_wildcards
+
         self._config = config
         self._root = root
+        self._spec = spec
+        self._registry = registry if registry is not None else config.raw_registry()
+        self._base_wildcards = (
+            base_wildcards if base_wildcards is not None
+            else config_base_wildcards(config.extra)
+        )
+        self._out_root = out_root if out_root is not None else root / config.output_dir
+
+    @property
+    def registry(self) -> dict[str, Any]:
+        """The raw registry this resolver resolves against."""
+        return self._registry
+
+    def _kwargs(self, group: str, member: str, entities: dict[str, Any]) -> dict[str, Any]:
+        from pipeio.bidspath import align_entities, family_kwargs
+
+        if group not in self._registry:
+            raise KeyError(f"Unknown group: {group!r}")
+        members = self._registry[group].get("members") or {}
+        if member not in members:
+            known = ", ".join(members) or "(none)"
+            raise KeyError(f"Unknown member: {member!r} in group {group!r}. Known: {known}")
+        # A base input the config does not declare (added in the Snakefile)
+        # contributes no wildcards; the caller supplies the entities.
+        base = self._registry[group].get("base_input")
+        wcs = dict(self._base_wildcards)
+        if base and base not in wcs:
+            wcs[base] = {}
+        template = family_kwargs(self._registry, group, member, base_wildcards=wcs)
+        ents = align_entities(entities, template, self._spec)
+        return family_kwargs(self._registry, group, member, ents, base_wildcards=wcs)
 
     def resolve(self, group: str, member: str, **entities: str) -> Path:
-        """Resolve a single BIDS-compliant path from the registry group and member."""
-        grp = self._config.registry.get(group)
-        if grp is None:
-            raise KeyError(f"Unknown group: {group!r}")
-        mem = grp.members.get(member)
-        if mem is None:
-            known = ", ".join(grp.members.keys()) or "(none)"
-            raise KeyError(f"Unknown member: {member!r} in group {group!r}. Known: {known}")
+        """Resolve a single path from the registry group and member."""
+        from pipeio.bidspath import bids_path
 
-        group_root = grp.bids.get("root", group)
-        datatype = grp.bids.get("datatype", "")
-        output_dir = self._config.output_dir
+        kwargs = self._kwargs(group, member, entities)
+        root_rel = kwargs.pop("root", "")
+        out_root = self._out_root / root_rel if root_rel else self._out_root
+        return Path(bids_path(out_root, spec=self._spec, **kwargs))
 
-        # Build BIDS directory: output_dir/sub-XX/ses-XX/group_root/datatype/
-        dir_parts: list[str] = [output_dir]
-        if "subject" in entities:
-            dir_parts.append(f"sub-{entities['subject']}")
-        if "session" in entities:
-            dir_parts.append(f"ses-{entities['session']}")
-        dir_parts.append(group_root)
-        if datatype:
-            dir_parts.append(datatype)
-
-        # Build BIDS filename: sub-XX_ses-XX_task-XX_..._suffix.extension
-        name_parts: list[str] = []
-        for key in _BIDS_ENTITY_ORDER:
-            if key in entities:
-                abbrev = _BIDS_ABBREV.get(key, key)
-                name_parts.append(f"{abbrev}-{entities[key]}")
-        if mem.suffix:
-            name_parts.append(mem.suffix)
-        filename = "_".join(name_parts) + mem.extension if name_parts else f"{mem.suffix}{mem.extension}"
-
-        dir_parts.append(filename)
-        return self._root / "/".join(dir_parts)
+    def pattern(self, group: str, member: str) -> str:
+        """Path template with ``{wildcard}`` placeholders, relative to the project root."""
+        path = self.resolve(group, member)
+        try:
+            return str(path.relative_to(self._root))
+        except ValueError:
+            return str(path)
 
     def expand(self, group: str, member: str, **filters: str) -> list[Path]:
         """Enumerate matching paths by globbing the filesystem."""
-        grp = self._config.registry.get(group)
-        if grp is None:
-            raise KeyError(f"Unknown group: {group!r}")
-        mem = grp.members.get(member)
-        if mem is None:
-            raise KeyError(f"Unknown member: {member!r} in group {group!r}")
+        from pipeio.bidspath import entity_tags
 
-        group_root = grp.bids.get("root", group)
-        output_dir = self._config.output_dir
-        base = self._root / output_dir / group_root
-
+        kwargs = self._kwargs(group, member, {})
+        root_rel = kwargs.get("root", "")
+        base = self._out_root / root_rel if root_rel else self._out_root
         if not base.exists():
             return []
 
-        # Glob for files matching the suffix+extension pattern
-        pattern = f"**/*{mem.suffix}{mem.extension}"
-        matches = sorted(base.glob(pattern))
+        suffix = kwargs.get("suffix") or ""
+        extension = kwargs.get("extension") or ""
+        matches = sorted(base.glob(f"**/*{suffix}{extension}"))
 
-        # Apply entity filters
         if filters:
-            filtered = []
-            for p in matches:
-                path_str = str(p)
-                if all(f"{_BIDS_ABBREV.get(k, k)}-{v}" in path_str for k, v in filters.items()):
-                    filtered.append(p)
-            matches = filtered
-
+            tags = {**_BIDS_ABBREV, **entity_tags(self._spec)}
+            matches = [
+                p for p in matches
+                if all(f"{tags.get(k, k)}-{v}" in str(p) for k, v in filters.items())
+            ]
         return matches
 
 
@@ -362,8 +389,12 @@ class PipelineContext:
         if not cfg_path.is_absolute():
             cfg_path = root / cfg_path
 
+        from pipeio.bidspath import flow_bids_spec
+
         flow_config = FlowConfig.from_yaml(cfg_path)
-        resolver = SimpleResolver(flow_config, root)
+        resolver = SimpleResolver(
+            flow_config, root, spec=flow_bids_spec(cfg_path.parent),
+        )
         return cls(
             root=root,
             resolver=resolver,
@@ -385,6 +416,8 @@ class PipelineContext:
 
     def pattern(self, group: str, member: str) -> str:
         """Return the path template with ``{entity}`` placeholders."""
+        if hasattr(self.resolver, "pattern"):
+            return self.resolver.pattern(group, member)
         grp = self.config.registry.get(group)
         if grp is None:
             raise KeyError(f"Unknown group: {group!r}")

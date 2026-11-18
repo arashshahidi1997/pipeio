@@ -11,12 +11,27 @@ pipeio flow targets ieeg -g badlabel -x -e sub=01           # expand (glob) on d
 ## Via MCP
 
 ```
-pipeio_target_paths(pipe="preprocess", flow="ieeg")                              # list groups
-pipeio_target_paths(pipe="preprocess", flow="ieeg", group="badlabel", member="npy",
-                    entities={"sub": "01", "ses": "04"})                          # resolve
-pipeio_target_paths(pipe="preprocess", flow="ieeg", group="badlabel", expand=True,
-                    entities={"sub": "01"})                                       # expand
+pipeio_target_paths(flow="preprocess_ieeg")                                      # list groups
+pipeio_target_paths(flow="preprocess_ieeg", group="badlabel", member="npy",
+                    entities={"subject": "01", "session": "04"})                  # resolve
+pipeio_target_paths(flow="preprocess_ieeg", group="badlabel", expand=True,
+                    entities={"subject": "01"})                                   # expand
 ```
+
+Paths are built by the same code as the flow's `BidsPaths` (`pipeio.bidspath`),
+under the bids spec the Snakefile sets with `set_bids_spec(...)`: the family's
+`bids.root` comes first, then `sub-`/`ses-` directories, the datatype and the
+filename. A resolved path is therefore a target snakemake can build. Wildcards
+the entities leave open are listed in `missing_entities`.
+
+Families the Snakefile adds to the registry in Python (one per band, per
+detection, ...) are not in `config.yml`. When `group` is not found there, the
+tool loads the Snakefile in the project env (`python_bin`, auto-resolved by
+projio) with `snakebids.generate_inputs` stubbed so the dataset is not scanned,
+and uses the registry of the flow's `BidsPaths`. The first load takes tens of
+seconds; the result is cached in `.projio/pipeio/cache/registry/<flow>.json`
+until a flow file changes. Pass `snakefile=True` to list those families, or
+`snakefile=False` to stay on `config.yml`.
 
 ## From a config file
 
