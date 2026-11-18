@@ -32,12 +32,14 @@ during collection when no source ``index.md`` exists).
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import unquote
 
 import yaml
 from pydantic import BaseModel
@@ -95,6 +97,153 @@ def _copy_with_header(src: Path, dst: Path, root: Path) -> None:
         dst.write_text(header + text, encoding="utf-8")
     else:
         shutil.copy2(src, dst)
+
+
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})[^\n]*\n.*?^\1[ \t]*$", re.M | re.S)
+"""Fenced code blocks; links inside them are left alone."""
+
+_MD_LINK_RE = re.compile(
+    r"(`+)[^`]*?\1"                               # inline code span: skip
+    r"|(!?)\[((?:[^\[\]]|\[[^\]]*\])*)\]"       # [label] / ![alt]
+    r"\(([^()\s]+)(\s+\"[^\"]*\")?\)"            # (url "title")
+)
+
+_EXTERNAL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+
+
+@dataclass
+class _LinkContext:
+    """What a collected page's relative links can point to."""
+
+    routes: dict[Path, Path]  # normalised source path -> collected path
+    site_docs: Path | None  # the site's docs_dir (pages there stay linkable)
+    root: Path
+    warnings: list[str]
+
+
+def _norm(p: Path) -> Path:
+    return Path(os.path.normpath(p))
+
+
+def _is_under(p: Path, parent: Path) -> bool:
+    try:
+        p.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _show(p: Path, root: Path) -> str:
+    return str(p.relative_to(root)) if _is_under(p, root) else str(p)
+
+
+def _stays_in_site(dst: Path, rel: str, site_docs: Path | None) -> bool:
+    """Whether *rel*, followed from *dst*, never climbs above *site_docs*.
+
+    mkdocs resolves links inside its docs dir, so ``../../../docs/x.md`` from
+    ``docs/pipelines/f/`` is dead even though it exists on disk.
+    """
+    if site_docs is None:
+        return True
+    try:
+        start = dst.parent.relative_to(site_docs).as_posix()
+    except ValueError:
+        return False
+    joined = os.path.normpath(os.path.join(start, rel)).replace(os.sep, "/")
+    return joined != ".." and not joined.startswith("../")
+
+
+def _retarget(url: str, src: Path, dst: Path, lc: _LinkContext) -> str | None:
+    """New URL for a relative link written in *src*, now living at *dst*.
+
+    Returns *url* unchanged when nothing needs doing, a rewritten URL when the
+    target was collected elsewhere (or is a site page at another depth), and
+    ``None`` when the target is not part of the site (the caller drops the
+    link and a warning is recorded).
+    """
+    if _EXTERNAL_RE.match(url) or url.startswith(("#", "/")) or "{" in url:
+        return url
+    m = re.search(r"[#?]", url)
+    path, sep, frag = (url[:m.start()], m.group(0), url[m.end():]) if m else (url, "", "")
+    if not path:
+        return url
+    rel = unquote(path)
+    target = _norm(src.parent / rel)
+    new_target = lc.routes.get(target)
+    if new_target is None:
+        if _stays_in_site(dst, rel, lc.site_docs) and _norm(dst.parent / rel).exists():
+            return url  # a generated sibling (report.md, notebooks/...) or still valid
+        if lc.site_docs is not None and _is_under(target, lc.site_docs) and target.exists():
+            new_target = target
+    if new_target is None:
+        reason = "outside the collected docs" if target.exists() else "not collected"
+        lc.warnings.append(
+            f"{_show(dst, lc.root)}: dropped link {url!r} ({reason}: {_show(target, lc.root)})"
+        )
+        return None
+    new = os.path.relpath(new_target, dst.parent).replace(os.sep, "/")
+    return new + sep + frag
+
+
+def _rewrite_links(text: str, src: Path, dst: Path, lc: _LinkContext) -> str:
+    """Re-point the relative links of a page copied from *src* to *dst*.
+
+    Links to pages collected elsewhere get their new relative path; links to
+    other site pages are adjusted to the new depth; links to anything not in
+    the site are reduced to their label, with a warning in ``lc.warnings``.
+    """
+
+    def repl(m: re.Match[str]) -> str:
+        if m.group(1):
+            return m.group(0)
+        bang, label, url, title = m.group(2), m.group(3), m.group(4), m.group(5) or ""
+        new = _retarget(url, src, dst, lc)
+        if new is None:
+            return label
+        if new == url:
+            return m.group(0)
+        return f"{bang}[{label}]({new}{title})"
+
+    out: list[str] = []
+    pos = 0
+    for fence in _FENCE_RE.finditer(text):
+        out.append(_MD_LINK_RE.sub(repl, text[pos:fence.start()]))
+        out.append(fence.group(0))
+        pos = fence.end()
+    out.append(_MD_LINK_RE.sub(repl, text[pos:]))
+    return "".join(out)
+
+
+def _flow_doc_routes(flow_docs: Path, target: Path) -> list[tuple[Path, Path]]:
+    """Where each file under a flow's ``docs/`` lands in the collected tree.
+
+    Mod facet directories (containing theory.md/spec.md/delta.md) go to
+    ``mods/{mod}/``; ``overview.md`` becomes ``index.md`` when no source
+    ``index.md`` exists (legacy convention).
+    """
+    if not flow_docs.is_dir():
+        return []
+    mod_dirs = {
+        d.name for d in flow_docs.iterdir()
+        if d.is_dir() and any(
+            (d / f).exists() for f in ("theory.md", "spec.md", "delta.md")
+        )
+    }
+    has_source_index = (flow_docs / "index.md").is_file()
+    routes: list[tuple[Path, Path]] = []
+    for src_file in sorted(flow_docs.rglob("*")):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(flow_docs)
+        parts = rel.parts
+        if parts and parts[0] in mod_dirs:
+            dst = target / "mods" / rel
+        elif rel == Path("overview.md") and not has_source_index:
+            dst = target / "index.md"
+        else:
+            dst = target / rel
+        routes.append((src_file, dst))
+    return routes
 
 
 class PublishConfig(BaseModel):
@@ -327,36 +476,10 @@ class DocsCollector:
 
     def collect(self, ctx: CollectContext) -> list[str]:
         collected: list[str] = []
-        flow_docs = ctx.flow_dir / "docs"
-        if not flow_docs.is_dir():
-            return collected
-
-        # Detect mod subdirectories (contain theory.md or spec.md)
-        mod_dirs = {
-            d.name for d in flow_docs.iterdir()
-            if d.is_dir() and any(
-                (d / f).exists() for f in ("theory.md", "spec.md", "delta.md")
-            )
-        }
-        has_source_index = (flow_docs / "index.md").is_file()
-        for src_file in sorted(flow_docs.rglob("*")):
-            if not src_file.is_file():
-                continue
-            rel = src_file.relative_to(flow_docs)
-            parts = rel.parts
-            # Route mod facet dirs into mods/ subdirectory
-            if parts and parts[0] in mod_dirs:
-                dst = ctx.target / "mods" / rel
-            # overview.md at flow root → use as index only when no
-            # source index.md exists; otherwise keep as separate page
-            elif rel == Path("overview.md") and not has_source_index:
-                dst = ctx.target / "index.md"
-            else:
-                dst = ctx.target / rel
+        for src_file, dst in _flow_doc_routes(ctx.flow_dir / "docs", ctx.target):
             if _is_stale(src_file, dst):
                 _copy_with_header(src_file, dst, ctx.root)
             collected.append(str(dst))
-
         return collected
 
 
@@ -578,6 +701,7 @@ def docs_collect(
     *,
     export: bool = True,
     docs_base: Path | None = None,
+    warnings: list[str] | None = None,
 ) -> list[str]:
     """Collect flow-local docs and notebook outputs into ``docs/pipelines/``.
 
@@ -590,6 +714,13 @@ def docs_collect(
        pre-built exports, reports, and generated indexes into the
        output tree.
 
+    Then every collected markdown page is rebuilt from its source with its
+    relative links fixed for the new location: links to pages collected
+    elsewhere (another flow, a mod facet routed to ``mods/``) and to site
+    pages under the docs dir are re-pointed; links to anything not in the
+    site (code files, pages that were not collected such as a missing
+    ``report.md``) are reduced to their label and reported in *warnings*.
+
     Pass ``export=False`` to skip generation when exports were already
     produced independently (e.g. via MCP tools or CI).
 
@@ -597,7 +728,9 @@ def docs_collect(
         root: Project root.
         export: Whether to run the export phase first.
         docs_base: Explicit output directory for collected docs. When
-            ``None``, defaults to ``<root>/docs/pipelines/``.
+            ``None``, defaults to ``<root>/docs/pipelines/``. Its parent is
+            taken as the site's docs dir.
+        warnings: If given, one message per dropped link is appended.
 
     Returns list of collected file paths.
     """
@@ -611,6 +744,9 @@ def docs_collect(
     if docs_base is None:
         docs_base = root / "docs" / "pipelines"
     collected: list[str] = []
+    # Markdown pages whose links are fixed after collection: dst -> src
+    pages: dict[Path, Path] = {}
+    routes: dict[Path, Path] = {}
 
     # Generate top-level index.md for pipelines section
     pipelines_index = docs_base / "index.md"
@@ -637,18 +773,14 @@ def docs_collect(
     else:
         pipelines_dir = root / "code" / "pipelines"
     arch_src = pipelines_dir / "architecture.md"
+    arch_dst = docs_base / "architecture.md"
     if arch_src.is_file():
-        arch_dst = docs_base / "architecture.md"
-        arch_dst.parent.mkdir(parents=True, exist_ok=True)
-        text = arch_src.read_text(encoding="utf-8")
-        text = _normalize_dir_links(text)
-        text = _rewrite_mermaid_click_links(text)
-        rel = arch_src.relative_to(root)
-        header = _GENERATED_HEADER.format(source=rel)
-        arch_dst.write_text(header + text, encoding="utf-8")
+        routes[_norm(arch_src)] = arch_dst
+        pages[arch_dst] = arch_src
         collected.append(str(arch_dst))
 
-    # Process each flow
+    # Per-flow contexts, and where every source page will land
+    contexts: list[CollectContext] = []
     for entry in registry.list_flows():
         flow_dir = Path(entry.code_path)
         if not flow_dir.is_absolute():
@@ -670,7 +802,17 @@ def docs_collect(
             root=root,
             publish=pub_cfg,
         )
+        contexts.append(ctx)
+        for src, dst in _flow_doc_routes(flow_dir / "docs", ctx.target):
+            routes[_norm(src)] = dst
+            if src.suffix == ".md":
+                pages[dst] = src
+        changelog = flow_dir / "CHANGELOG.md"
+        if pub_cfg.changelog and changelog.exists():
+            routes[_norm(changelog)] = ctx.target / "changelog.md"
+            pages[ctx.target / "changelog.md"] = changelog
 
+    for ctx in contexts:
         # Phase 1: Export — generate artifacts into .build/
         if export:
             export_dag(ctx)
@@ -679,6 +821,21 @@ def docs_collect(
         # Phase 2: Collect — pure file copying
         for collector in _COLLECTORS:
             collected.extend(collector.collect(ctx))
+
+    # Phase 3: rebuild collected pages with links fixed for their new depth
+    lc = _LinkContext(
+        routes=routes, site_docs=docs_base.parent, root=root,
+        warnings=warnings if warnings is not None else [],
+    )
+    for dst, src in pages.items():
+        text = _normalize_dir_links(src.read_text(encoding="utf-8"))
+        if dst == arch_dst:
+            text = _rewrite_mermaid_click_links(text)
+        text = _rewrite_links(text, src, dst, lc)
+        content = _GENERATED_HEADER.format(source=_show(src, root)) + text
+        if not dst.exists() or dst.read_text(encoding="utf-8") != content:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(content, encoding="utf-8")
 
     # Write docs/pipelines/mkdocs.yml for monorepo plugin
     if collected:

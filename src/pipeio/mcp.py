@@ -1691,6 +1691,9 @@ def mcp_docs_collect(
 ) -> dict[str, Any]:
     """Collect flow-local docs and notebook outputs into docs/pipelines/ (build artifact, gitignored).
 
+    Relative links in collected pages are re-pointed for their new location;
+    links to files outside the site are dropped and listed in ``link_warnings``.
+
     Args:
         root: Project root.
         docs_base: Explicit output directory. When ``None``, defaults to
@@ -1698,17 +1701,25 @@ def mcp_docs_collect(
     """
     from pipeio.docs import docs_collect
 
+    warnings: list[str] = []
     try:
-        collected = docs_collect(root, docs_base=docs_base)
+        collected = docs_collect(root, docs_base=docs_base, warnings=warnings)
     except ImportError as exc:
         return {"error": str(exc)}
     except Exception as exc:
         return {"error": str(exc)}
 
-    return {
+    out: dict[str, Any] = {
         "collected": len(collected),
         "files": collected,
     }
+    if warnings:
+        out["link_warnings"] = warnings
+        out["hint"] = (
+            "These links in flow docs point at files that are not in the site; "
+            "they were reduced to their label. Fix them in the source docs."
+        )
+    return out
 
 
 def mcp_docs_nav(

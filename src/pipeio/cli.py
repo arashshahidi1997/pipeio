@@ -1237,11 +1237,14 @@ def _cmd_docs_collect(args: argparse.Namespace) -> int:
 
     root = Path(args.root) if args.root else _find_root()
     export = not getattr(args, "no_export", False)
+    warnings: list[str] = []
     try:
-        collected = docs_collect(root, export=export)
+        collected = docs_collect(root, export=export, warnings=warnings)
     except ImportError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    for w in warnings:
+        print(f"  warning: {w}", file=sys.stderr)
     if collected:
         for p in collected:
             print(f"  collected: {p}")

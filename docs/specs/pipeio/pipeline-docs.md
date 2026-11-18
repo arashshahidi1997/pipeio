@@ -229,6 +229,26 @@ legacy `docs/overview.md`), it generates a minimal stub so the page still
 renders. Compliant flows will always have a real source index and the stub
 path is never taken.
 
+### Links in collected pages
+
+Pages move when collected (`{flow}/docs/x.md` to `docs/pipelines/{flow}/x.md`,
+mod facets to `mods/{mod}/`, `CHANGELOG.md` up one level), so after the
+collectors run every collected page is rebuilt from its source with its
+relative links fixed. Write links relative to the source file; then:
+
+- a link to another collected page (same flow, a mod facet, another flow's
+  docs, `CHANGELOG.md`, `architecture.md`) points at its collected copy;
+- a link to a page elsewhere in the site's docs dir (for example
+  `../../../docs/log/meeting/<note>.md`) gets the path for the new depth;
+- a link to a generated page that exists (`report.md`, `changelog.md`,
+  `scripts.md`, `dag.svg`, `notebooks/...`) is kept;
+- a link to anything else (code files, configs, a `report.md` or
+  `changelog.md` that was not collected) is reduced to its label, and
+  `pipeio_docs_collect` lists it in `link_warnings` (the CLI prints a
+  warning). Fix those in the source, e.g. link code by repository URL.
+
+Links inside fenced or inline code are left alone.
+
 ## `publish.yml` gating
 
 Each flow has an optional `publish.yml` at its root that controls which
