@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.2.0 (2026-11-19)
+
+The first release since 0.1.0. The entries under this heading were collected over several
+months; the summary below lists what is new since 0.1.0 and the detailed entries follow.
+
+### Added
+- **Notebook backends**: a `NotebookBackend` protocol with jupytext percent-format and marimo notebooks side by side, chosen per notebook by `format:` in `notebook.yml` (auto-detected when empty); `kind: interactive` for marimo exploration notebooks.
+- **`pipeio_nb_validate`, `pipeio_nb_watch`, `pipeio_nb_snapshot`**: structural validation (AST for percent, `marimo check` for marimo), live `marimo edit --watch`, and executing a marimo notebook to read its cell outputs.
+- **`pipeio nb open` / `mcp_nb_open`**: launch or attach to a headless marimo server (`--headless --no-token`, free port), deduped against running servers; returns url, port, pid, server and session ids.
+- **Snakemake profiles**: `profiles.base` in `.projio/pipeio/config.yml` is passed as `--profile` and `<flow>/profiles/default` as `--workflow-profile` for `flow smk`, `flow run` and `pipeio_run`; a user-passed profile wins.
+- **`pipeio_run`**: `keep_going`, `forcerun`, `forceall`, `touch`, `retries`; always-on `--rerun-incomplete`, `--latency-wait 15`, `--printshellcmds`, `--show-failed-logs`; stale snakemake locks are unlocked before launching; wildcards are passed as snakebids `--filter-<key>`.
+- **`bids_dir`** config key: the snakebids scan root, separate from `input_dir`; marimo `python_bin` override.
+
+### Changed
+- `mcp_nb_report` is now **`mcp_nb_extract`** (`pipeio_nb_extract`); the snakemake HTML report is `mcp_flow_report` (`pipeio_flow_report`).
+- No hardcoded lab conda envs: snakemake and graphviz are found on PATH or in the running env. `pipeio flow new` writes a README with runner-aware commands instead of a per-flow Makefile.
+- `docs/pipelines/mkdocs.yml` carries a generated header (projects track it so a clean checkout builds).
+- Dependencies declared: `argcomplete>=3.0`, `ruamel.yaml>=0.18`.
+
+### Fixed
+- The marimo backend registers even when the server env has no marimo (marimo notebooks no longer read as percent); `nb_publish` exports marimo notebooks to HTML.
+- `docs_collect` / `docs_nav` publish only notebooks flagged in `notebook.yml`.
+
+Detailed entries, as they were collected:
+
 ### Added
 - **Pipeline docs spec** — new `docs/specs/pipeio/pipeline-docs.md` canonicalizes flow-level documentation: source tree layout (`docs/index.md` as landing page, per-mod facet dirs with theory/spec/delta, flow-root `CHANGELOG.md`), flow index template with supervisor-facing sections (Final Products table, Rules-annotated Mod Chain, Data Availability, DAG, Report, Changelog, Known Gaps), mod documentation roles, Keep-a-Changelog-style flow CHANGELOG convention with notio note cross-refs, and collection pipeline with `publish.yml` gating. Reference example: `preprocess_motion`. See [commit note](../../docs/log/commit/commit-arash-20260413-175852-000000.md).
 - **`mcp_flow_audit`** (`pipeio_flow_audit`) — read-only compliance check against pipeline-docs.md spec. Reports which scaffolded files exist, which canonical sections are present in `docs/index.md`, and which mod facet dirs have theory/spec pairs. Returns a structured dict with `issues`, `suggestions`, and a `fix_hint`. Exposed as `pipeio flow audit <flow>` / `pipeio flow audit all` CLI and `pf <flow> audit` shell helper. Migration pattern: audit → `pipeio flow new <flow>` (idempotent) → re-audit.
