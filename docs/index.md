@@ -6,7 +6,7 @@ Pipeio makes pipeline knowledge — registry, configs, rules, contracts, noteboo
 
 ## Start here
 
-- **New to pipeio?** Follow the [Quickstart tutorial](tutorials/quickstart.md) to set up a registry and resolve your first paths.
+- **New to pipeio?** Follow the [end-to-end tutorial](tutorials/end-to-end.md) from idea to a published flow, or [adopt pipeio in an existing project](tutorials/existing-project.md).
 - **Already using pipeio?** Jump to [How-to guides](how-to/index.md) for task-focused recipes.
 - **Want to understand the design?** Read the [Explanation](explanation/index.md) pages.
 - **Need exact syntax?** See the [Reference](reference/index.md).

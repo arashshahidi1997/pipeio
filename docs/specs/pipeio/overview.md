@@ -40,7 +40,7 @@ metadata, contracts, and structure — rather than managing execution directly.
 pipeio is an **engineering surface**: flows, DAGs, configs, run state, design
 history (CHANGELOG). Scientific findings, hypothesis tracking, and narrative
 reports are owned by notio results, questio, and deliverables respectively.
-See [delegation-model.md](../../../../../docs/explanation/delegation-model.md)
+See [delegation-model.md](https://github.com/arashshahidi1997/projio/blob/master/docs/explanation/delegation-model.md)
 for the boundary statement and linking-direction rule.
 
 ## Package Structure

@@ -17,7 +17,6 @@ nav:
   - Home: index.md
   - Tutorials:
       - tutorials/index.md
-      - Quickstart: tutorials/quickstart.md
   - How-To Guides:
       - how-to/index.md
       - Initialize a project: how-to/init.md

@@ -323,7 +323,7 @@ scientific outputs — they do not embed result plots, hypothesis evaluations,
 or narrative writeups.
 
 The ecosystem splits ownership along an engineering-vs-science boundary
-documented in [delegation-model.md](../../../../../../docs/explanation/delegation-model.md):
+documented in [delegation-model.md](https://github.com/arashshahidi1997/projio/blob/master/docs/explanation/delegation-model.md):
 
 - **pipeio flows** own pipeline machinery (this spec)
 - **questio** owns research questions and hypothesis tracking
@@ -345,8 +345,8 @@ Downstream objects set one or more of these frontmatter fields:
 
 A result also sets `question:` (required) and a deliverable sets
 `questions:` and `results:`, per the delegation model. See the
-[notio result template](../../../../../../.projio/notio/templates/result.md)
-and [deliverables spec](../../../../../../docs/specs/deliverables.md).
+[notio result template](https://github.com/arashshahidi1997/projio/blob/master/.projio/notio/templates/result.md)
+and [deliverables spec](https://github.com/arashshahidi1997/projio/blob/master/docs/specs/deliverables.md).
 
 ### Backlinks on the flow page
 
@@ -393,5 +393,5 @@ crumb trail to the science, not the science itself.
 - [cli.md](cli.md) — `pipeio flow new`, `pipeio docs collect`.
 - [mcp-tools.md](mcp-tools.md) — `pipeio_flow_new`, `pipeio_flow_audit`,
   `pipeio_docs_collect`, `pipeio_dag_export` tool reference.
-- [delegation-model.md](../../../../../../docs/explanation/delegation-model.md)
+- [delegation-model.md](https://github.com/arashshahidi1997/projio/blob/master/docs/explanation/delegation-model.md)
   — the engineering-vs-science boundary and linking-direction rule.
